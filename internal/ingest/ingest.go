@@ -216,6 +216,7 @@ type ScopeStore interface {
 
 // Worker holds the dependencies for one broker's ingest loop.
 type Worker struct {
+	timing           callbackTiming
 	cfg              Config
 	db               DB
 	hub              *hub.Hub
@@ -237,6 +238,7 @@ func New(cfg Config, db DB, h *hub.Hub, keys ChannelKeyStore, scopes ScopeStore)
 //
 // Intended usage: go worker.Start(ctx)
 func (w *Worker) Start(ctx context.Context) {
+	go w.logCallbackTiming(ctx)
 	// Isolate workers across deployments; Paho reuses this ID on reconnect.
 	// Keep it alphanumeric and within MQTT 3.1's 23-character client ID limit.
 	opts := mqtt.NewClientOptions().
@@ -319,6 +321,9 @@ func isValidIATA(s string) bool {
 // Each message is processed with a 30s timeout to prevent slow DB calls
 // from blocking the MQTT receive goroutine indefinitely.
 func (w *Worker) handleMessage(msg mqtt.Message) {
+	started := time.Now()
+	w.timing.started.Store(started.UnixNano())
+	defer w.timing.record(started)
 	// Topic shape: meshcore/{IATA}/{pubkey}/{subtopic}
 	parts := strings.SplitN(msg.Topic(), "/", 4)
 	if len(parts) != 4 || parts[0] != "meshcore" {
