@@ -101,11 +101,17 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	pool, err := pgxpool.New(ctx, getEnv("POSTGRES_DSN"))
+	poolConfig, err := pgxpool.ParseConfig(getEnv("POSTGRES_DSN"))
+	if err != nil {
+		log.Fatal("invalid database configuration")
+	}
+	poolConfig.ConnConfig.Tracer = queryTimingTracer{}
+	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
 	if err != nil {
 		log.Fatalf("failed to connect to postgres at %s: %v", os.Getenv("POSTGRES_DSN_HOST"), err)
 	}
 	defer pool.Close()
+	go logPoolTiming(ctx, pool)
 
 	if err := db.RunMigrations(ctx, pool); err != nil {
 		log.Fatalf("migrations failed: %v", err)
