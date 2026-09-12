@@ -463,6 +463,8 @@ SELECT COUNT(*) FROM packet_observations WHERE packet_hash = $1;
 SELECT
   p.packet_hash,
   p.payload_type,
+  COALESCE(CASE WHEN p.payload_type = 4 AND jsonb_typeof(p.parsed_payload #> '{appData,name}') = 'string'
+    THEN p.parsed_payload #>> '{appData,name}' END, '')::text AS summary,
   p.route_type,
   p.first_heard_at,
   p.last_heard_at,
@@ -558,6 +560,8 @@ page AS (
 SELECT
   p.packet_hash,
   p.payload_type,
+  COALESCE(CASE WHEN p.payload_type = 4 AND jsonb_typeof(p.parsed_payload #> '{appData,name}') = 'string'
+    THEN p.parsed_payload #>> '{appData,name}' END, '')::text AS summary,
   p.route_type,
   p.first_heard_at,
   p.last_heard_at,
@@ -596,6 +600,8 @@ ORDER BY sh.site_heard_at DESC;
 SELECT
   p.packet_hash,
   p.payload_type,
+  COALESCE(CASE WHEN p.payload_type = 4 AND jsonb_typeof(p.parsed_payload #> '{appData,name}') = 'string'
+    THEN p.parsed_payload #>> '{appData,name}' END, '')::text AS summary,
   p.route_type,
   p.first_heard_at,
   p.last_heard_at,
