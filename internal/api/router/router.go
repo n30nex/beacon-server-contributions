@@ -39,7 +39,7 @@ import (
 //	  /stats           → stats subrouter
 //
 // Admin endpoints require a configured bearer key.
-func New(h *hub.Hub, reader api.Reader, workers []*ingest.Worker, maxConnsPerIP int, corsCfg config.CORSConfig, serverCfg config.ServerConfig, authCfg config.AuthConfig, rateLimitCfg config.ResolvedRateLimitConfig) http.Handler {
+func New(h *hub.Hub, reader api.Reader, workers []*ingest.Worker, maxConnsPerIP int, corsCfg config.CORSConfig, serverCfg config.ServerConfig, authCfg config.AuthConfig, rateLimitCfg config.ResolvedRateLimitConfig, accounts api.AccountStore) http.Handler {
 	r := chi.NewRouter()
 
 	// ── CORS ─────────────────────────────────────────────────────────────────
@@ -121,7 +121,7 @@ func New(h *hub.Hub, reader api.Reader, workers []*ingest.Worker, maxConnsPerIP 
 		})
 
 		// Protect the entire subtree, including its root and unknown paths.
-		r.Mount("/admin", mw.BearerAuth(authCfg.APIKey, handlers.AdminRouter(adminConfig)))
+		r.Mount("/admin", mw.BearerAuth(authCfg.APIKey, handlers.AdminRouter(adminConfig, accounts)))
 	})
 
 	return r
