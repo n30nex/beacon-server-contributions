@@ -29,7 +29,7 @@ func TestWebSocketAttemptClientIdentity(t *testing.T) {
 			if tc.trusted {
 				cfg.TrustedProxies = []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32")}
 			}
-			handler := New(nil, nil, nil, 5, 1, config.CORSConfig{}, cfg, config.Resolve(&config.Config{}).RateLimit, config.AuthConfig{})
+			handler := New(nil, nil, nil, 5, 1, config.CORSConfig{}, cfg, config.Resolve(&config.Config{}).RateLimit, config.AuthConfig{}, nil)
 			attempt := func(peer, header string) int {
 				request := httptest.NewRequest(http.MethodGet, "/ws", nil)
 				request.RemoteAddr = peer
