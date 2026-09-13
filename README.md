@@ -129,14 +129,24 @@ broker workers, not connection status or a tunable processing-worker pool).
 The CORS lists are the options supplied to the middleware; its normal matching
 normalization still applies. The response is a startup snapshot and excludes
 credential fields, broker addresses, channel material, database settings and
-other configuration. Changes require a restart. Configuration writes and account
-operations are not implemented; unknown admin paths return 404 and unsupported
+other configuration. Changes require a restart. Configuration writes are not
+implemented; unknown admin paths return 404 and unsupported
 methods on the config endpoint return 405 after authentication.
 Global CORS preflights remain public. Use a long, randomly generated key, keep
 it out of source control and logs, and send it only in the Authorization header,
 never the URL or request body. Require HTTPS at the reverse proxy and restrict
 direct access to Beacon's HTTP listener to that proxy or a private connection.
 Changing the key requires a restart. No API key is issued automatically.
+
+Operator accounts are available at `GET/POST /api/v1/admin/accounts` and
+`GET/DELETE /api/v1/admin/accounts/{id}`. POST accepts a JSON `name` field in a
+body up to 4 KiB; names are trimmed, case-sensitive and limited to 128 Unicode
+characters without control characters. Active names are unique. DELETE soft
+deactivates the record (204); missing IDs return 404 and an already inactive
+record returns 409. A deactivated name may be reused by a new account.
+Lists include active and inactive records, newest first, without pagination.
+These are operator-defined records; no login, session or API token is created.
+Cross-origin clients must have their methods allowed in the existing CORS config.
 
 ### Environment variables (`.env`)
 
