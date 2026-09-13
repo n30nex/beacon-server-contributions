@@ -288,7 +288,7 @@ func main() {
 	go scheduler.Start(ctx)
 
 	// ── HTTP server ──────────────────────────────────────────────────────────
-	r := router.New(h, reader, []*ingest.Worker{broker1, broker2}, resolved.MaxConnsPerIP, resolved.MaxConnectsPerMinute, cfg.CORS, cfg.Server, resolved.RateLimit)
+	r := router.New(h, reader, []*ingest.Worker{broker1, broker2}, resolved.MaxConnsPerIP, resolved.MaxConnectsPerMinute, cfg.CORS, cfg.Server, resolved.RateLimit, cfg.Auth)
 
 	srv := &http.Server{
 		Addr:     addr,
