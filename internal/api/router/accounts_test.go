@@ -25,7 +25,7 @@ func (s *routedAccountStore) CreateAccount(_ context.Context, name string) (api.
 }
 func TestAccountRouterUsesProtectedStore(t *testing.T) {
 	store := &routedAccountStore{}
-	r := New(nil, nil, nil, 5, config.CORSConfig{}, config.ServerConfig{}, config.AuthConfig{APIKey: "test-key"}, store)
+	r := New(nil, nil, nil, 5, 1000, config.CORSConfig{}, config.ServerConfig{}, config.AuthConfig{APIKey: "test-key"}, config.ResolvedRateLimitConfig{}, store)
 	for _, token := range []string{"", "wrong", "test-key"} {
 		req := httptest.NewRequest("POST", "/api/v1/admin/accounts", strings.NewReader(`{"name":"test"}`))
 		req.Header.Set("Content-Type", "application/json")
