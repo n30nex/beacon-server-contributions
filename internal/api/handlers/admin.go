@@ -10,11 +10,12 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
-// AdminRouter mounts read-only operator endpoints. Its caller must wrap the
+// AdminRouter mounts operator endpoints. Its caller must wrap the
 // entire subrouter with BearerAuth, including unknown paths and methods.
-func AdminRouter(snapshot api.AdminConfig) http.Handler {
+func AdminRouter(snapshot api.AdminConfig, accounts api.AccountStore) http.Handler {
 	r := chi.NewRouter()
 	r.Get("/config", getAdminConfig(snapshot))
+	r.Mount("/accounts", AccountsRouter(accounts))
 	return r
 }
 
