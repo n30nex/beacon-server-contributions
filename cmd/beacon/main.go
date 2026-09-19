@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"strconv"
 	"syscall"
@@ -20,6 +21,7 @@ import (
 	"github.com/MeshCore-Beacon/beacon-server/internal/api"
 	"github.com/MeshCore-Beacon/beacon-server/internal/api/router"
 	"github.com/MeshCore-Beacon/beacon-server/internal/background"
+	"github.com/MeshCore-Beacon/beacon-server/internal/backup"
 	"github.com/MeshCore-Beacon/beacon-server/internal/cache"
 	"github.com/MeshCore-Beacon/beacon-server/internal/config"
 	"github.com/MeshCore-Beacon/beacon-server/internal/hub"
@@ -108,6 +110,11 @@ func main() {
 	}
 
 	resolved := config.Resolve(cfg)
+	localBorders, err := config.LoadLocalBorders(cfg)
+	if err != nil {
+		slog.Error("invalid local border configuration", "component", "startup", "error", err)
+		os.Exit(1)
+	}
 
 	slog.Info(fmt.Sprintf("config: loaded — %s", resolved), "component", "startup")
 
@@ -119,7 +126,19 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	pool, err := pgxpool.New(ctx, getEnv("POSTGRES_DSN"))
+	dsn := getEnv("POSTGRES_DSN")
+	var backupOpts backup.Options
+	if cfg.Backup.Enabled {
+		service, connectionErr := backup.ConnectionService(dsn)
+		_, clientErr := exec.LookPath("pg_dump")
+		if cfg.Auth.APIKey == "" || connectionErr != nil || clientErr != nil {
+			slog.Error("backup download requires an admin key, a supported PostgreSQL URL and pg_dump in this runtime", "component", "startup")
+			os.Exit(1)
+		}
+		backupOpts = backup.Options{ConfigPath: configPath, MaxBytes: backup.DefaultMaxBytes,
+			Timeout: backup.DefaultTimeout, Version: version, ConnectionService: service}
+	}
+	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
 		// Parse errors can embed the complete DSN, including its password.
 		slog.Error("invalid PostgreSQL connection configuration; check POSTGRES_DSN", "component", "startup")
@@ -242,6 +261,7 @@ func main() {
 	broker1 := ingest.New(
 		ingest.Config{
 			BrokerName:          "mqtt1",
+			LocalBorders:        localBorders,
 			URL:                 getEnv("MQTT_BROKER_1_URL"),
 			Username:            getEnv("MQTT_BROKER_1_USERNAME"),
 			Password:            getEnv("MQTT_BROKER_1_PASSWORD"),
@@ -257,6 +277,7 @@ func main() {
 	broker2 := ingest.New(
 		ingest.Config{
 			BrokerName:          "mqtt2",
+			LocalBorders:        localBorders,
 			URL:                 getEnv("MQTT_BROKER_2_URL"),
 			Username:            getEnv("MQTT_BROKER_2_USERNAME"),
 			Password:            getEnv("MQTT_BROKER_2_PASSWORD"),
@@ -293,7 +314,10 @@ func main() {
 	go scheduler.Start(ctx)
 
 	// ── HTTP server ──────────────────────────────────────────────────────────
-	r := router.New(h, reader, []*ingest.Worker{broker1, broker2}, resolved.MaxConnsPerIP, resolved.MaxConnectsPerMinute, cfg.CORS, cfg.Server, cfg.Auth, resolved.RateLimit)
+	// Wrap after wiring cache invalidators and cleanup callbacks to the actual
+	// CachedReader. Only response projections receive the geographic annotation.
+	reader = api.WithLocalBorders(reader, localBorders)
+	r := router.New(h, reader, []*ingest.Worker{broker1, broker2}, resolved.MaxConnsPerIP, resolved.MaxConnectsPerMinute, cfg.CORS, cfg.Server, cfg.Auth, resolved.RateLimit, store, backupOpts)
 
 	srv := &http.Server{
 		Addr:     addr,

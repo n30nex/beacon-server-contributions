@@ -11,11 +11,11 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
-	"github.com/go-chi/cors"
 
 	"github.com/MeshCore-Beacon/beacon-server/internal/api"
 	"github.com/MeshCore-Beacon/beacon-server/internal/api/handlers"
 	mw "github.com/MeshCore-Beacon/beacon-server/internal/api/middleware"
+	"github.com/MeshCore-Beacon/beacon-server/internal/backup"
 	"github.com/MeshCore-Beacon/beacon-server/internal/config"
 	"github.com/MeshCore-Beacon/beacon-server/internal/hub"
 	"github.com/MeshCore-Beacon/beacon-server/internal/ingest"
@@ -39,8 +39,12 @@ import (
 //	  /stats           → stats subrouter
 //
 // Admin endpoints require a configured bearer key.
-func New(h *hub.Hub, reader api.Reader, workers []*ingest.Worker, maxConnsPerIP, maxConnectsPerMinute int, corsCfg config.CORSConfig, serverCfg config.ServerConfig, authCfg config.AuthConfig, rateLimitCfg config.ResolvedRateLimitConfig) http.Handler {
+func New(h *hub.Hub, reader api.Reader, workers []*ingest.Worker, maxConnsPerIP, maxConnectsPerMinute int, corsCfg config.CORSConfig, serverCfg config.ServerConfig, authCfg config.AuthConfig, rateLimitCfg config.ResolvedRateLimitConfig, accounts api.AccountStore, backupOptions ...backup.Options) http.Handler {
 	r := chi.NewRouter()
+	var backupOpts backup.Options
+	if len(backupOptions) > 0 {
+		backupOpts = backupOptions[0]
+	}
 
 	// ── CORS ─────────────────────────────────────────────────────────────────
 	allowedOrigins := corsCfg.AllowedOrigins
@@ -59,14 +63,6 @@ func New(h *hub.Hub, reader api.Reader, workers []*ingest.Worker, maxConnsPerIP,
 	if maxAge == 0 {
 		maxAge = 300
 	}
-	r.Use(cors.Handler(cors.Options{
-		AllowedOrigins:   allowedOrigins,
-		AllowedMethods:   allowedMethods,
-		AllowedHeaders:   allowedHeaders,
-		ExposedHeaders:   []string{"Retry-After"},
-		AllowCredentials: corsCfg.AllowCredentials,
-		MaxAge:           maxAge,
-	}))
 	// Capture only values used by this router. Do not retain Config, credentials
 	// or caller-owned slices in the admin response.
 	adminConfig := api.AdminConfig{
@@ -80,6 +76,8 @@ func New(h *hub.Hub, reader api.Reader, workers []*ingest.Worker, maxConnsPerIP,
 		},
 		Ingest: api.AdminIngestConfig{BrokerCount: len(workers)},
 	}
+	runtimeConfig := mw.NewRuntimeConfig(adminConfig, []string{"Retry-After"})
+	r.Use(runtimeConfig.CORS)
 
 	// ── Global middleware ────────────────────────────────────────────────────
 	r.Use(middleware.RequestID)
@@ -121,7 +119,7 @@ func New(h *hub.Hub, reader api.Reader, workers []*ingest.Worker, maxConnsPerIP,
 		})
 
 		// Protect the entire subtree, including its root and unknown paths.
-		r.Mount("/admin", mw.BearerAuth(authCfg.APIKey, handlers.AdminRouter(adminConfig)))
+		r.Mount("/admin", mw.BearerAuth(authCfg.APIKey, handlers.AdminRouter(runtimeConfig, accounts, handlers.BackupDownload(backupOpts))))
 	})
 
 	return r

@@ -28,8 +28,8 @@ in PostgreSQL, and streams live events to WebSocket clients.
 For deployment instructions including the frontend app, see the deployment docs.
 
 For a bounded private database and saved-config bundle, see
-[backup export](docs/backup-export.md). This is a standalone export tool; the
-backup web interface and import workflow are separate follow-ups.
+[backup export](docs/backup-export.md). A standalone export tool is available; the
+protected download API is opt-in; browser login and import remain separate follow-ups.
 
 ---
 
@@ -127,20 +127,45 @@ With no key, admin requests return JSON 503 while public reads and WebSockets
 continue normally. With a key, missing, incorrect or duplicate Authorization
 headers return JSON 401 with `WWW-Authenticate: Bearer`.
 
-`GET /api/v1/admin/config` returns selected startup settings: CORS options with
+`GET /api/v1/admin/config` returns selected running settings: CORS options with
 Beacon defaults applied, `auth.configured`, and `ingest.broker_count` (configured
 broker workers, not connection status or a tunable processing-worker pool).
 The CORS lists are the options supplied to the middleware; its normal matching
-normalization still applies. The response is a startup snapshot and excludes
+normalization still applies. The response excludes
 credential fields, broker addresses, channel material, database settings and
-other configuration. Changes require a restart. Configuration writes and account
-operations are not implemented; unknown admin paths return 404 and unsupported
+other configuration. Unknown admin paths return 404 and unsupported
 methods on the config endpoint return 405 after authentication.
 Global CORS preflights remain public. Use a long, randomly generated key, keep
 it out of source control and logs, and send it only in the Authorization header,
 never the URL or request body. Require HTTPS at the reverse proxy and restrict
 direct access to Beacon's HTTP listener to that proxy or a private connection.
 Changing the key requires a restart. No API key is issued automatically.
+
+Operator accounts are available at `GET/POST /api/v1/admin/accounts` and
+`GET/DELETE /api/v1/admin/accounts/{id}`. POST accepts a JSON `name` field in a
+body up to 4 KiB; names are trimmed, case-sensitive and limited to 128 Unicode
+characters without control characters. Active names are unique. DELETE soft
+deactivates the record (204); missing IDs return 404 and an already inactive
+record returns 409. A deactivated name may be reused by a new account.
+Lists include active and inactive records, newest first, without pagination.
+These are operator-defined records; no login, session or API token is created.
+Cross-origin clients must have their methods allowed in the existing CORS config.
+
+`PUT /api/v1/admin/config` accepts only
+`{"cors":{"allowed_origins":["https://example.org"]}}`. It replaces the entire
+origin list immediately and updates the reported configuration with the same
+policy. Requests already in progress may use the previous policy. Concurrent
+valid updates are serialized; updates take effect one at a time. The response
+contains `config`, `persisted: false` and `requires_restart: false`.
+
+Updates are **runtime-only**: no file or database is written, and restarting
+reloads the saved configuration. Keep 1–32 ASCII HTTP(S) origins, at most 512 bytes
+each, with an optional single hostname wildcard; a sole `*` permits all origins.
+Empty/null lists, URL paths/queries/credentials, control characters and unknown
+fields are rejected. Requests must be JSON, at most 16 KiB. Other CORS options,
+auth/credential fields and broker count cannot be changed here; there is no
+configurable `ingest.worker_count`. Cross-origin admin clients need PUT allowed
+in the saved CORS methods. CORS controls browser access, not authentication.
 
 ### Environment variables (`.env`)
 
@@ -228,6 +253,7 @@ websocket:
 
 # Node staleness, deletion, and clock-drift thresholds.
 nodes:
+  mark_foreign: false # optional indication for repeaters outside configured IATA borders
   stale_threshold: 24h # mark a node "stale" in the API after this long unseen (default: 24h)
   delete_after: 720h # delete a node entirely after this long unseen (default: 30 days, same default as packets.retention)
   clock_drift_threshold: 5m # |device clock - server clock| above which clockOutOfSync=true for a repeater/room server (default: 5m)
@@ -270,6 +296,33 @@ names, coordinates, and optional region borders. Regions and channel keys
 must be defined here — they are not auto-created.
 
 ---
+
+### Foreign repeater indication
+
+Set `nodes.mark_foreign: true` to expose `possiblyForeign` on repeater nodes.
+The local operating area is the union of **all configured**
+`iatas.<code>.borderFile` GeoJSON Polygon/MultiPolygon features. IATAs without
+border files do not add an area; airport coordinates and the current API region
+filter are not boundaries. Enabling this with no borders, missing files or
+invalid geometry fails startup. Border changes require a restart.
+
+Inside any polygon (including its edges) means `false`; outside the entire union
+means `true`. Hole interiors are outside; hole edges are local. Other node roles,
+missing/invalid positions and the 0/0 location reset have no classification.
+This is a hint based on reported position, not proof of a repeater's origin.
+Packet ingestion, heard-in IATAs and route matching remain unchanged.
+
+Node list/detail reads apply the current geometry after cache reads, so existing
+historical nodes need no backfill. A `nodeUpdate` includes `possiblyForeign`
+when its advert provides a position: a boolean for known positions, `null` to
+clear an unknown/reset position. Omission retains the previous value when a
+repeater's advert omits its position. A change to another role also sends `null`.
+The field is omitted everywhere when the feature is disabled (the default).
+
+Use longitude/latitude coordinate order and split antimeridian-crossing borders
+into MultiPolygons as described in [RFC 7946 section 3.1.9](https://www.rfc-editor.org/rfc/rfc7946#section-3.1.9).
+Classification rejects unsplit edges spanning more than 180 degrees rather than
+silently treating them as the complementary global area.
 
 ## Authentication
 
