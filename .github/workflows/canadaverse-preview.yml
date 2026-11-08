@@ -13,7 +13,7 @@ jobs:
     if: github.repository == 'n30nex/beacon-server-contributions'
     runs-on: ubuntu-latest
     env:
-      PREVIEW_VERSION: 2.7.1-n30nex.1
+      PREVIEW_VERSION: 2.8.0-n30nex.1
     steps:
       - uses: actions/checkout@v4
         with:
