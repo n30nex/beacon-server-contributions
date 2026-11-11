@@ -1,7 +1,7 @@
 # Copyright 2026 Beacon Contributors
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
-FROM golang:1.26.10-alpine AS builder
+FROM golang:1.26.11-alpine AS builder
 ARG SOURCE_REVISION=unknown
 ARG BUILD_VERSION=dev
 WORKDIR /app
