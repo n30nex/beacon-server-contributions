@@ -4,12 +4,30 @@
 package router
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/MeshCore-Beacon/beacon-server/internal/api"
 )
+
+func TestCompanionIntakeAndFirmwarePollingCapabilitiesAreIndependent(t *testing.T) {
+	for _, polling := range []bool{false, true} {
+		r := New(nil, nil, nil, Options{PollingEnabled: polling, NodeTelemetry: http.NotFoundHandler()})
+		response := httptest.NewRecorder()
+		r.ServeHTTP(response, httptest.NewRequest("GET", "/api/v1/info", nil))
+		var info api.Info
+		if err := json.Unmarshal(response.Body.Bytes(), &info); err != nil {
+			t.Fatal(err)
+		}
+		if !info.CollectedNodeTelemetry || info.Features.Polling != polling || info.Features.Accounts != "off" {
+			t.Fatalf("independent capabilities changed: %+v", info)
+		}
+	}
+}
 
 func TestNodeTelemetryOptionalRoutesAndCapability(t *testing.T) {
 	disabled := New(nil, nil, nil, Options{})

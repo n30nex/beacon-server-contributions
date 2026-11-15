@@ -866,7 +866,7 @@ func (q *Queries) GetNodeActivityHourly(ctx context.Context, arg GetNodeActivity
 }
 
 const getNodeByID = `-- name: GetNodeByID :one
-SELECT n.id, n.public_key, n.node_type, n.name, n.latitude, n.longitude, n.location_source, n.last_advert_at, n.supports_multibyte_paths, n.supports_multibyte_traces, n.default_scope_id, n.min_firmware_version, n.first_seen, n.last_seen, n.radio_freq_mhz, n.radio_sf, n.radio_bw_khz, n.metadata, n.device_clock_drift_seconds, ts.name AS default_scope_name,
+SELECT n.id, n.public_key, n.node_type, n.name, n.latitude, n.longitude, n.location_source, n.last_advert_at, n.supports_multibyte_paths, n.supports_multibyte_traces, n.default_scope_id, n.min_firmware_version, n.first_seen, n.last_seen, n.radio_freq_mhz, n.radio_sf, n.radio_bw_khz, n.metadata, n.device_clock_drift_seconds, n.prev_clock_drift_seconds, ts.name AS default_scope_name,
   EXISTS (SELECT 1 FROM observers o WHERE o.public_key = n.public_key) AS is_observer,
   (SELECT o.id FROM observers o WHERE o.public_key = n.public_key LIMIT 1) AS observer_id,
   (SELECT json_agg(json_build_object('iata', ni.iata, 'lastHeard', (extract(epoch from ni.last_heard) * 1000)::bigint) ORDER BY ni.last_heard DESC)
@@ -902,6 +902,7 @@ type GetNodeByIDRow struct {
 	RadioBwKhz              *float32           `json:"radio_bw_khz"`
 	Metadata                []byte             `json:"metadata"`
 	DeviceClockDriftSeconds *int64             `json:"device_clock_drift_seconds"`
+	PrevClockDriftSeconds   *int64             `json:"prev_clock_drift_seconds"`
 	DefaultScopeName        *string            `json:"default_scope_name"`
 	IsObserver              bool               `json:"is_observer"`
 	ObserverID              uuid.UUID          `json:"observer_id"`
@@ -933,6 +934,7 @@ func (q *Queries) GetNodeByID(ctx context.Context, id uuid.UUID) (GetNodeByIDRow
 		&i.RadioBwKhz,
 		&i.Metadata,
 		&i.DeviceClockDriftSeconds,
+		&i.PrevClockDriftSeconds,
 		&i.DefaultScopeName,
 		&i.IsObserver,
 		&i.ObserverID,
@@ -6688,6 +6690,27 @@ func (q *Queries) ReconfirmSliceEnd(ctx context.Context, arg ReconfirmSliceEndPa
 	return i, err
 }
 
+const recordClockDrift = `-- name: RecordClockDrift :exec
+WITH ins AS (
+    INSERT INTO node_clock_drifts (node_id, advert_at, drift_seconds) VALUES ($1, now(), $2)
+    ON CONFLICT (node_id, advert_at) DO NOTHING
+)
+DELETE FROM node_clock_drifts x
+WHERE x.node_id = $1
+  AND x.advert_at < (SELECT d.advert_at FROM node_clock_drifts d WHERE d.node_id = $1 ORDER BY d.advert_at DESC OFFSET 15 LIMIT 1)
+`
+
+type RecordClockDriftParams struct {
+	NodeID       uuid.UUID `json:"node_id"`
+	DriftSeconds int64     `json:"drift_seconds"`
+}
+
+// Keeps the drift of the node's last 16 adverts: the new one in, the older ones beyond 15 out.
+func (q *Queries) RecordClockDrift(ctx context.Context, arg RecordClockDriftParams) error {
+	_, err := q.db.Exec(ctx, recordClockDrift, arg.NodeID, arg.DriftSeconds)
+	return err
+}
+
 const recordTrace = `-- name: RecordTrace :exec
 WITH iata AS (
   INSERT INTO trace_iatas (trace_tag, iata, last_heard)
@@ -8256,8 +8279,9 @@ ON CONFLICT (public_key) DO UPDATE SET
   radio_freq_mhz  = EXCLUDED.radio_freq_mhz,
   radio_sf        = EXCLUDED.radio_sf,
   radio_bw_khz    = EXCLUDED.radio_bw_khz,
+  prev_clock_drift_seconds = nodes.device_clock_drift_seconds,
   device_clock_drift_seconds = EXCLUDED.device_clock_drift_seconds
-RETURNING id, public_key, node_type, name, latitude, longitude, location_source, last_advert_at, supports_multibyte_paths, supports_multibyte_traces, default_scope_id, min_firmware_version, first_seen, last_seen, radio_freq_mhz, radio_sf, radio_bw_khz, metadata, device_clock_drift_seconds
+RETURNING id, public_key, node_type, name, latitude, longitude, location_source, last_advert_at, supports_multibyte_paths, supports_multibyte_traces, default_scope_id, min_firmware_version, first_seen, last_seen, radio_freq_mhz, radio_sf, radio_bw_khz, metadata, device_clock_drift_seconds, prev_clock_drift_seconds
 `
 
 type UpsertNodeParams struct {
@@ -8310,6 +8334,7 @@ func (q *Queries) UpsertNode(ctx context.Context, arg UpsertNodeParams) (Node, e
 		&i.RadioBwKhz,
 		&i.Metadata,
 		&i.DeviceClockDriftSeconds,
+		&i.PrevClockDriftSeconds,
 	)
 	return i, err
 }

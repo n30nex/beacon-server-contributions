@@ -101,3 +101,37 @@ func TestInfoRoute(t *testing.T) {
 		t.Fatalf("info: %d %s", response.Code, response.Body.String())
 	}
 }
+
+func TestInfoAccountsFeatures(t *testing.T) {
+	for name, tc := range map[string]struct {
+		opts Options
+		want string
+	}{
+		"off":                      {Options{}, `"accounts":"off","registration":false`},
+		"local open":               {Options{AccountsMode: "local", RegistrationOpen: true}, `"accounts":"local","registration":true`},
+		"local closed":             {Options{AccountsMode: "local"}, `"accounts":"local","registration":false`},
+		"off ignores registration": {Options{RegistrationOpen: true}, `"accounts":"off","registration":false`},
+	} {
+		handler := New(nil, nil, nil, tc.opts)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/info", nil))
+		if body := response.Body.String(); response.Code != http.StatusOK || !strings.Contains(body, tc.want) {
+			t.Errorf("%s: %d %s", name, response.Code, body)
+		}
+	}
+}
+
+func TestInfoFeatures(t *testing.T) {
+	for polling, want := range map[bool]string{
+		true:  `"features":{"polling":true,"accounts":"off","registration":false,"telemetryRequests":false,"alerts":false}`,
+		false: `"features":{"polling":false,"accounts":"off","registration":false,"telemetryRequests":false,"alerts":false}`,
+	} {
+		handler := New(nil, nil, nil, Options{ServerVersion: "2.0.2", PollingEnabled: polling})
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/info", nil))
+		if body := response.Body.String(); response.Code != http.StatusOK || !strings.Contains(body, want) ||
+			!strings.Contains(body, `"minAppVersion":null`) || !strings.Contains(body, `"serverVersion":"2.0.2"`) {
+			t.Errorf("polling=%v: %d %s", polling, response.Code, body)
+		}
+	}
+}

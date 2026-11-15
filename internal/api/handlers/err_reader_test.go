@@ -94,6 +94,14 @@ func (e errReader) GetObserverTelemetryBucketed(ctx context.Context, observerID 
 	return v, e.err
 }
 
+func (e errReader) GetNodeReadings(ctx context.Context, nodeID uuid.UUID, since, until time.Time, includeUntrusted bool) (v []api.NodeReading, polled bool, untrusted int, err error) {
+	return v, polled, untrusted, e.err
+}
+
+func (e errReader) GetNodePolling(ctx context.Context, nodeID uuid.UUID) (v *api.NodePolling, err error) {
+	return v, e.err
+}
+
 func (e errReader) GetObserverActivity(ctx context.Context, observerID uuid.UUID, window, interval time.Duration, until time.Time) (v *api.ObserverActivity, err error) {
 	return v, e.err
 }

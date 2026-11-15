@@ -21,6 +21,7 @@ import (
 	pgdata "github.com/MeshCore-Beacon/beacon-server/db/planguard"
 	"github.com/MeshCore-Beacon/beacon-server/db/planpolicy"
 	"github.com/MeshCore-Beacon/beacon-server/docs"
+	"github.com/MeshCore-Beacon/beacon-server/internal/alerts"
 	"github.com/MeshCore-Beacon/beacon-server/internal/api"
 	"github.com/MeshCore-Beacon/beacon-server/internal/api/handlers"
 	"github.com/MeshCore-Beacon/beacon-server/internal/api/router"
@@ -34,12 +35,15 @@ import (
 	"github.com/MeshCore-Beacon/beacon-server/internal/ingest"
 	"github.com/MeshCore-Beacon/beacon-server/internal/keystore"
 	"github.com/MeshCore-Beacon/beacon-server/internal/logging"
+	"github.com/MeshCore-Beacon/beacon-server/internal/mail"
 	"github.com/MeshCore-Beacon/beacon-server/internal/meshmapper"
 	"github.com/MeshCore-Beacon/beacon-server/internal/metrics"
 	"github.com/MeshCore-Beacon/beacon-server/internal/obscount"
 	"github.com/MeshCore-Beacon/beacon-server/internal/planguard"
+	"github.com/MeshCore-Beacon/beacon-server/internal/polling"
 	"github.com/MeshCore-Beacon/beacon-server/internal/presence"
 	"github.com/MeshCore-Beacon/beacon-server/internal/scopestore"
+	"github.com/MeshCore-Beacon/beacon-server/internal/users"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -74,6 +78,13 @@ var revision = ""
 // @name Authorization
 // @description Enter Bearer followed by the configured operator key. Use HTTPS.
 
+// @securityDefinitions.apikey UserSession
+// @in header
+// @name Authorization
+// @description Enter Bearer followed by an app session token from POST /auth/app/token. Web sessions use the beacon_session cookie and the X-Beacon-CSRF header instead.
+
+// @tag.name			Accounts
+// @tag.description	Sign-in, sessions and the signed-in user's profile; 404 accounts_disabled unless accounts.mode is local
 // @tag.name			IATAs
 // @tag.description	Airport/location codes that group observers and packets
 // @tag.name			Regions
@@ -403,9 +414,9 @@ func main() {
 	}
 
 	// ── Build geographic ingest filter ───────────────────────────────────────────────────────────
-	allowedIATAs := iatadb.BuildAllowedSet(cfg.Ingest.AllowCountries, cfg.Ingest.AllowContinents)
+	allowedIATAs := iatadb.BuildAllowedSet(cfg.Ingest.AllowCountries, cfg.Ingest.AllowContinents, cfg.Ingest.AllowIATAs)
 	if allowedIATAs != nil {
-		slog.Info(fmt.Sprintf("config: ingest filter active — %d allowed IATAs (countries=%v continents=%v)", len(allowedIATAs), cfg.Ingest.AllowCountries, cfg.Ingest.AllowContinents), "component", "startup")
+		slog.Info(fmt.Sprintf("config: ingest filter active — %d allowed IATAs (countries=%v continents=%v iatas=%v)", len(allowedIATAs), cfg.Ingest.AllowCountries, cfg.Ingest.AllowContinents, cfg.Ingest.AllowIATAs), "component", "startup")
 	} else {
 		slog.Info("config: ingest filter inactive — accepting all IATAs", "component", "startup")
 	}
@@ -453,6 +464,119 @@ func main() {
 		keys,
 		scopes,
 	)
+
+	// ── Accounts ─────────────────────────────────────────────────────────────
+	// The SMTP password is read here and never logged; only on/off and the public host are.
+	resolvedAccounts, err := cfg.Accounts.ResolveWithSecrets(os.Getenv("BEACON_SMTP_PASSWORD"), os.Getenv("BEACON_PORTAL_SECRET"))
+	if err != nil {
+		slog.Error("invalid accounts configuration", "component", "startup", "error", err)
+		os.Exit(1)
+	}
+	accountsHost := ""
+	if resolvedAccounts.PublicURL != nil {
+		accountsHost = resolvedAccounts.PublicURL.Host
+	}
+	slog.Info("accounts", "component", "startup", "enabled", resolvedAccounts.Enabled, "public_host", accountsHost)
+	accountsMode := "off"
+	// Left an untyped nil while accounts are off: a nil *users.Service stored in the interface would be called.
+	var accountsSvc handlers.AccountsService
+	var usersService *users.Service
+	var accountMailer mail.Sender // nil while accounts are off
+	var authOptions handlers.AuthOptions
+	portalURL := ""
+	var meMounts []handlers.MeMount
+	if resolvedAccounts.Enabled {
+		meMounts = append(meMounts, handlers.AtlasRoutes(maintStore))
+		accountsMode = "local"
+		var sender mail.Sender = mail.Discard{} // portal users have no address, so nothing is mailed
+		if !resolvedAccounts.Portal {
+			sender = mail.NewSMTP(resolvedAccounts.SMTPHost, resolvedAccounts.SMTPPort, resolvedAccounts.SMTPUsername,
+				resolvedAccounts.SMTPPassword, resolvedAccounts.SMTPFrom, resolvedAccounts.SMTPStartTLS)
+		}
+		accountMailer = sender
+		usersService = users.NewService(maintStore, sender, resolvedAccounts, time.Now, slog.Default())
+		accountsSvc = usersService
+		authOptions = handlers.AuthOptions{
+			Enabled: true, CookieSecure: resolvedAccounts.CookieSecure,
+			PublicOrigin:   resolvedAccounts.PublicURL.Scheme + "://" + resolvedAccounts.PublicURL.Host,
+			AllowedOrigins: cfg.CORS.AllowedOrigins, ReadOnly: resolved.ReadOnly,
+		}
+		if resolvedAccounts.Portal {
+			accountsMode = "portal"
+			portalURL = resolvedAccounts.PortalURL.String()
+			authOptions.Portal = users.NewPortal(usersService, maintStore, resolvedAccounts, nil)
+		}
+		slog.Info("accounts mode", "component", "startup", "mode", accountsMode, "registration_open", resolvedAccounts.RegistrationOpen)
+	}
+
+	// ── Repeater polling ─────────────────────────────────────────────────────
+	// config.Load already validated the section. The write-side service sits on the ingest store, which has a
+	// pool for the claim and election transactions, and is not wrapped by the presence coalescer.
+	resolvedPolling, err := cfg.Polling.Resolve()
+	if err != nil {
+		slog.Error("invalid polling configuration", "component", "startup", "error", err)
+		os.Exit(1)
+	}
+	maintStore.SetPollingEnabled(resolvedPolling.Enabled) // alerts read it: with polling off, telemetry rules go inactive
+	slog.Info("repeater polling", "component", "startup", "enabled", resolvedPolling.Enabled, "mqtt_hosts", len(resolvedPolling.MQTTHosts), "hosts", resolvedPolling.MQTTHosts)
+	var pollingSvc *polling.Service
+	var guestPolling handlers.GuestPolling // stays an untyped nil unless polling is on
+	if resolvedPolling.Enabled {
+		if mode.Ingest {
+			pollingSvc = polling.NewService(ingestStore, resolvedPolling, time.Now, slog.Default())
+			broker1.SetPolling(pollingSvc)
+			broker2.SetPolling(pollingSvc)
+			guestPolling = pollingSvc
+		} else {
+			// Read-only: only Policy and Owners are asked, so the read-routed API store is enough.
+			guestPolling = polling.NewService(apiStore, resolvedPolling, time.Now, slog.Default())
+		}
+	}
+
+	// Telemetry requests sit on polling and accounts and seal guest passwords under BEACON_SECRET_KEY.
+	requestSealer, requestsOff, err := telemetryRequestsSealer(resolvedPolling, resolvedAccounts.Enabled, os.Getenv("BEACON_SECRET_KEY"))
+	if err != nil {
+		slog.Error("invalid secret key", "component", "startup", "error", err)
+		os.Exit(1)
+	}
+	var requestsSvc handlers.RequestsService // an untyped nil answers 404 requests_disabled
+	if requestSealer != nil {
+		var elector polling.Elector
+		if pollingSvc != nil {
+			elector = pollingSvc
+		}
+		if pollingSvc != nil {
+			pollingSvc.SetRequests(ingestStore, requestSealer)
+		}
+		if gp, ok := guestPolling.(*polling.Service); ok && gp != pollingSvc {
+			gp.SetRequests(apiStore, requestSealer) // read-only: owners answers only read the password in use
+		}
+		requestsSvc = polling.NewRequestService(maintStore, requestSealer, elector, resolvedPolling.RequestsPerUser, time.Now, slog.Default())
+		slog.Info("telemetry requests", "component", "startup", "per_user", resolvedPolling.RequestsPerUser)
+	} else if requestsOff != "" {
+		slog.Info("telemetry requests are off", "component", "startup", "reason", requestsOff)
+	}
+	// Alerts need accounts: rules hang on a user's Atlas.
+	resolvedAlerts, err := cfg.Alerts.Resolve(cfg.Accounts.Mode)
+	if err != nil {
+		slog.Error("invalid alerts configuration", "component", "startup", "error", err)
+		os.Exit(1)
+	}
+	alertDelivery := ""
+	var alertsSvc handlers.AlertsService // an untyped nil answers 404 alerts_disabled
+	if resolvedAccounts.Enabled && resolvedAlerts.Delivery != "off" {
+		alertDelivery = resolvedAlerts.Delivery
+		alertsSvc = alerts.NewService(maintStore, alertDelivery, time.Now)
+	}
+	slog.Info("alerts", "component", "startup", "delivery", resolvedAlerts.Delivery, "enabled", alertsSvc != nil)
+	alertSender, err := newAlertSender(alertDelivery, accountMailer, maintStore, resolvedAccounts.PublicURL, os.Getenv("BEACON_PUSH_CREDENTIALS"))
+	if err != nil {
+		slog.Error("invalid alert delivery", "component", "startup", "error", err)
+		os.Exit(1)
+	}
+	if resolvedAccounts.Enabled {
+		meMounts = append(meMounts, handlers.RequestRoutes(requestsSvc), handlers.AlertRoutes(alertsSvc))
+	}
 
 	if cr, ok := reader.(*cache.CachedReader); ok {
 		if scopeImporter != nil {
@@ -569,6 +693,23 @@ func main() {
 	if pgTask != nil {
 		tasks = append(tasks, *pgTask)
 	}
+	if usersService != nil {
+		// The mail worker stops with ctx, then sends what is queued; shutdown waits for it.
+		mailDone := usersService.Start(ctx)
+		backgroundJobs.Go(func() { <-mailDone })
+		if mode.Jobs {
+			tasks = append(tasks, background.UsersTasks(maintStore)...)
+		}
+	}
+	if alertSender != nil && mode.Jobs {
+		tasks = append(tasks, background.AlertTasks(db.AlertEval{Store: maintStore}, alertSender)...)
+	}
+	if pollingSvc != nil && mode.Jobs {
+		tasks = append(tasks, background.PollingTasks(pollingSvc, background.NewPollingMaint(maintStore), resolvedPolling)...)
+		if requestsSvc != nil {
+			tasks = append(tasks, background.RequestTasks(maintStore, resolvedPolling.OfflineDisableDays)...)
+		}
+	}
 	profiles := configureProfiling(ctx, pools.Maint)
 	defer profiles.Stop()
 	for i := range tasks {
@@ -590,6 +731,14 @@ func main() {
 		slog.Error("invalid telemetry gateway configuration", "component", "startup", "error", err)
 		os.Exit(1)
 	}
+	var pollingAdmin handlers.PollingAdminStore // nil answers 503
+	if resolvedPolling.Enabled && !resolved.ReadOnly {
+		pollingAdmin = maintStore
+	}
+	var usersAdmin handlers.UsersAdminStore // nil answers 503
+	if usersService != nil {
+		usersAdmin = maintStore
+	}
 	r := router.New(h, reader, []*ingest.Worker{broker1, broker2}, router.Options{
 		ScopeCatalogues:      scopeImporter,
 		NodeTelemetry:        telemetryGateway,
@@ -610,7 +759,14 @@ func main() {
 			"/accounts": handlers.AccountsRouter(maintStore),
 			"/backup":   handlers.BackupRouter(backupOpts, ctx),
 			"/db":       handlers.DBAdminRouter(maintStore, pgSource),
+			"/users":    handlers.UsersAdminRouter(usersAdmin, resolved.ReadOnly),
+			"/polling": handlers.PollingAdminRouter(pollingAdmin, handlers.PollingAdminConfig{
+				Paused: resolvedPolling.Paused, Authority: resolvedPolling.Authority, ExcludedNodes: resolvedPolling.ExcludedNodes}),
 		},
+		GuestPolling:   guestPolling,
+		PollingEnabled: resolvedPolling.Enabled,
+		AccountsMode:   accountsMode, RegistrationOpen: resolvedAccounts.RegistrationOpen, PortalURL: portalURL, AlertDelivery: alertDelivery,
+		Accounts: accountsSvc, AuthOptions: authOptions, MeMounts: meMounts, TelemetryRequests: requestsSvc != nil,
 		Guards:        guard,
 		APIPlanLayout: string(layout),
 	})

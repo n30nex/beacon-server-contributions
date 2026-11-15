@@ -4,6 +4,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/hex"
 	"errors"
 	"net/http"
@@ -23,17 +24,51 @@ import (
 // GET  /nodes/{nodeId}              → getNode
 // GET  /nodes/{nodeId}/observations → listNodeObservations
 // GET  /nodes/{nodeId}/activity     → getNodeActivity
-func NodesRouter(reader api.Reader) http.Handler {
+// GET  /nodes/{nodeId}/telemetry    → getNodeTelemetry
+// GET  /nodes/{nodeId}/polling      → getNodePolling
+//
+// With pollingEnabled false the telemetry and polling routes answer as for a node nobody polls,
+// without reading the readings or assignments.
+func NodesRouter(reader api.Reader, pollingEnabled bool) http.Handler {
 	r := chi.NewRouter()
+	telemetryReader := reader
+	if !pollingEnabled {
+		telemetryReader = unpolledReader{reader}
+	}
 	r.Get("/", listNodes(reader))
 	r.Post("/scopes", nodeScopeBatch(reader))
 	r.Route("/{nodeId}", func(r chi.Router) {
 		r.Get("/", getNode(reader))
 		r.Get("/observations", listNodeObservations(reader))
 		r.Get("/activity", getNodeActivity(reader))
+		r.Get("/telemetry", getNodeTelemetry(telemetryReader))
+		r.Get("/polling", getNodePolling(telemetryReader))
 		r.Get("/neighbors", listNodeNeighbors(reader))
 	})
 	return r
+}
+
+// unpolledReader answers the two polling reads as for a node with no readings. It still looks the
+// node up, so an unknown node stays a 404.
+type unpolledReader struct{ api.Reader }
+
+func (u unpolledReader) exists(ctx context.Context, nodeID uuid.UUID) error {
+	node, err := u.Reader.GetNode(ctx, nodeID)
+	if err == nil && node == nil {
+		return pgx.ErrNoRows
+	}
+	return err
+}
+
+func (u unpolledReader) GetNodeReadings(ctx context.Context, nodeID uuid.UUID, _, _ time.Time, _ bool) ([]api.NodeReading, bool, int, error) {
+	return nil, false, 0, u.exists(ctx, nodeID)
+}
+
+func (u unpolledReader) GetNodePolling(ctx context.Context, nodeID uuid.UUID) (*api.NodePolling, error) {
+	if err := u.exists(ctx, nodeID); err != nil {
+		return nil, err
+	}
+	return &api.NodePolling{}, nil
 }
 
 // listNodes godoc
@@ -391,4 +426,117 @@ func isHexString(s string) bool {
 		}
 	}
 	return true
+}
+
+// nodeTelemetryRanges maps each allowed range to its default bucket size.
+var nodeTelemetryRanges = map[string]string{"24h": "1h", "168h": "6h", "720h": "24h"}
+
+var nodeTelemetryIntervals = map[string]time.Duration{"1h": time.Hour, "6h": 6 * time.Hour, "24h": 24 * time.Hour}
+
+// getNodeTelemetry godoc
+//
+//	@Summary		Get a polled node's telemetry history
+//	@Description	Repeater readings bucketed into UTC windows. Counters are increments within the bucket, uptimeSeconds is the bucket maximum, the rest are averages; a field is omitted when no reading in the bucket carried it. Untrusted readings are left out unless include=untrusted, and counted in untrustedReadings. polled is true when the node has any reading at all. Answers as for an unpolled node when polling is off.
+//	@Tags			Nodes
+//	@Produce		json
+//	@Param			nodeId		path		string	true	"Node UUID"
+//	@Param			range		query		string	false	"Window: 24h, 168h (default) or 720h"	Enums(24h, 168h, 720h)
+//	@Param			interval	query		string	false	"Bucket size: 1h, 6h or 24h. Defaults to 1h for 24h, 6h for 168h, 24h for 720h"	Enums(1h, 6h, 24h)
+//	@Param			include		query		string	false	"untrusted to include readings from observers without advert evidence for the node"	Enums(untrusted)
+//	@Success		200			{object}	api.NodeTelemetry
+//	@Failure		400			{object}	handlers.APIError
+//	@Failure		404			{object}	handlers.APIError
+//	@Failure		500			{object}	handlers.APIError
+//	@Failure		503			{object}	handlers.APIError	"The read took too long: retry after Retry-After seconds"
+//	@Router			/nodes/{nodeId}/telemetry [get]
+func getNodeTelemetry(reader api.Reader) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		nodeID, err := uuid.Parse(chi.URLParam(r, "nodeId"))
+		if err != nil {
+			respondError(w, http.StatusBadRequest, "invalid node ID")
+			return
+		}
+		q := r.URL.Query()
+		rangeParam := q.Get("range")
+		if rangeParam == "" {
+			rangeParam = "168h"
+		}
+		defaultInterval, ok := nodeTelemetryRanges[rangeParam]
+		if !ok {
+			respondError(w, http.StatusBadRequest, "invalid range, use 24h, 168h or 720h")
+			return
+		}
+		intervalParam := q.Get("interval")
+		if intervalParam == "" {
+			intervalParam = defaultInterval
+		}
+		size, ok := nodeTelemetryIntervals[intervalParam]
+		if !ok {
+			respondError(w, http.StatusBadRequest, "invalid interval, use 1h, 6h or 24h")
+			return
+		}
+		include := q.Get("include")
+		if include != "" && include != "untrusted" {
+			respondError(w, http.StatusBadRequest, "invalid include, use untrusted")
+			return
+		}
+		window, _ := time.ParseDuration(rangeParam)
+		since := time.Now().Add(-window)
+		readings, polled, untrusted, err := reader.GetNodeReadings(r.Context(), nodeID, since, time.Time{}, include == "untrusted")
+		if errors.Is(err, pgx.ErrNoRows) {
+			respondError(w, http.StatusNotFound, "node not found")
+			return
+		}
+		if err != nil {
+			respondReaderError(w, err, "internal server error")
+			return
+		}
+		respond(w, http.StatusOK, api.NodeTelemetry{
+			Range:             rangeParam,
+			Interval:          intervalParam,
+			Polled:            polled,
+			UntrustedReadings: untrusted,
+			Points:            api.BucketNodeReadings(readings, since, size),
+		})
+	}
+}
+
+// getNodePolling godoc
+//
+//	@Summary		Get who polls a node
+//	@Description	The observer assigned to poll the node (null when nobody is), its standbys in rank order, and the time of the newest trusted reading. polled is true when the node has any reading at all. Answers as for an unpolled node when polling is off.
+//	@Tags			Nodes
+//	@Produce		json
+//	@Param			nodeId	path		string	true	"Node UUID"
+//	@Success		200		{object}	api.NodePolling
+//	@Failure		400		{object}	handlers.APIError
+//	@Failure		404		{object}	handlers.APIError
+//	@Failure		500		{object}	handlers.APIError
+//	@Failure		503		{object}	handlers.APIError	"The read took too long: retry after Retry-After seconds"
+//	@Router			/nodes/{nodeId}/polling [get]
+func getNodePolling(reader api.Reader) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		nodeID, err := uuid.Parse(chi.URLParam(r, "nodeId"))
+		if err != nil {
+			respondError(w, http.StatusBadRequest, "invalid node ID")
+			return
+		}
+		out, err := reader.GetNodePolling(r.Context(), nodeID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			respondError(w, http.StatusNotFound, "node not found")
+			return
+		}
+		if err != nil {
+			respondReaderError(w, err, "internal server error")
+			return
+		}
+		if out == nil {
+			respondError(w, http.StatusNotFound, "node not found")
+			return
+		}
+		if out.Standbys == nil {
+			out.Standbys = []api.NodePollingObserver{}
+		}
+		respond(w, http.StatusOK, out)
+	}
 }

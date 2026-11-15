@@ -278,6 +278,7 @@ func TestNodeReadersAfterIndexDropsPostgres(t *testing.T) {
 	ctx, tx := retentionTx(t)
 	applyBaseline(t, ctx, tx)
 	applyMigrationsTx(t, ctx, tx, "003_meshmapper_repeaters.sql", "062_node_scope_evidence.sql", "063_scope_activity.sql") // GetNode reads imported metadata and native scope evidence
+	applyMigrationsTx(t, ctx, tx, "077_nodes_prev_clock_drift.sql")                                                        // and every column of the node row
 	mustExec(t, ctx, tx, smallTableReaderFixture)
 	store := &Store{q: sqlc.New(tx)}
 
