@@ -1,6 +1,6 @@
 # Development audit fixes — November 2026
 
-This candidate starts at upstream dev `647e17e` and carries fixes for existing
+This candidate starts at upstream dev `2819d60` and carries fixes for existing
 Beacon behavior. Topology, scope investigation, MeshMapper profile extensions,
 and the independent companion collector are not part of this candidate.
 
