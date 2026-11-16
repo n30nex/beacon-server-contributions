@@ -377,7 +377,3 @@ func TestRunCapabilityDetection_NoNodes_DoesNothing(t *testing.T) {
 		t.Errorf("expected no capability calls for empty node list, got %d", len(db.setCapabilityCalls))
 	}
 }
-
-func (s *stubDB) RecordScopeObservation(context.Context, ScopeObservation) error {
-	return nil
-}

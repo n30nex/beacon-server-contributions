@@ -48,7 +48,7 @@ import (
 func New(h *hub.Hub, reader api.Reader, workers []*ingest.Worker, opts Options) http.Handler {
 	r := chi.NewRouter()
 
-	// â”€â”€ CORS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+	// ── CORS ─────────────────────────────────────────────────────────────────
 	allowedOrigins := opts.CORS.AllowedOrigins
 	if len(allowedOrigins) == 0 {
 		allowedOrigins = []string{"*"}
@@ -80,7 +80,7 @@ func New(h *hub.Hub, reader api.Reader, workers []*ingest.Worker, opts Options) 
 		Mobile: api.AdminMobileConfig{MinAppVersion: opts.MinAppVersion},
 		Web:    api.AdminWebConfig{MinWebVersion: opts.MinWebVersion},
 	}
-	features := api.InfoFeatures{Polling: opts.PollingEnabled, Accounts: "off", TelemetryRequests: opts.TelemetryRequests}
+	features := api.InfoFeatures{Polling: opts.PollingEnabled, Accounts: "off", TelemetryRequests: opts.TelemetryRequests, AtlasTelemetry: true}
 	switch opts.AccountsMode {
 	case "local":
 		features.Accounts, features.Registration = "local", opts.RegistrationOpen
@@ -90,7 +90,7 @@ func New(h *hub.Hub, reader api.Reader, workers []*ingest.Worker, opts Options) 
 	if opts.AlertDelivery != "" {
 		features.Alerts, features.AlertDelivery = true, opts.AlertDelivery
 	}
-	info := api.Info{ServerVersion: opts.ServerVersion, Features: features, BuildVersion: opts.BuildVersion, BuildRevision: opts.BuildRevision, CollectedNodeTelemetry: opts.NodeTelemetry != nil}
+	info := api.Info{ServerVersion: opts.ServerVersion, Features: features, BuildVersion: opts.BuildVersion, BuildRevision: opts.BuildRevision}
 	if opts.MinAppVersion != "" {
 		info.MinAppVersion = &opts.MinAppVersion
 	}
@@ -105,7 +105,7 @@ func New(h *hub.Hub, reader api.Reader, workers []*ingest.Worker, opts Options) 
 	}
 	r.Use(runtimeConfig.CORS)
 
-	// â”€â”€ Global middleware â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+	// ── Global middleware ────────────────────────────────────────────────────
 	r.Use(middleware.RequestID)
 	r.Use(mw.TrustedProxyIP(opts.Server.TrustedProxies))
 	r.Use(mw.RequestLogger)
@@ -113,7 +113,7 @@ func New(h *hub.Hub, reader api.Reader, workers []*ingest.Worker, opts Options) 
 	r.Use(middleware.CleanPath)
 	r.Use(middleware.StripSlashes)
 
-	// â”€â”€ Swagger UI â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+	// ── Swagger UI ──────────────────────────────────────────────────────────
 	r.Get("/swagger", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/swagger/index.html", http.StatusMovedPermanently)
 	})
@@ -122,7 +122,7 @@ func New(h *hub.Hub, reader api.Reader, workers []*ingest.Worker, opts Options) 
 		httpSwagger.URL("/swagger/doc.json"),
 	))
 
-	// â”€â”€ WebSocket â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+	// ── WebSocket ────────────────────────────────────────────────────────────
 	tickets := wsticket.New()
 	r.Get("/ws", ws.Handler(h, reader, ws.Limits{
 		MaxConnsPerIP:        opts.MaxConnsPerIP,
@@ -167,12 +167,8 @@ func New(h *hub.Hub, reader api.Reader, workers []*ingest.Worker, opts Options) 
 			r.Mount("/routes", handlers.RoutesRouter(reader))
 			r.Mount("/scopes", handlers.ScopesRouter(reader, opts.Scopes))
 			r.Mount("/stats", handlers.StatsRouter(reader, handlers.StatsOptions{Scopes: opts.Scopes, SeriesWindow: opts.RollupRetention}))
-			r.Get("/scope-catalogues", handlers.ScopeCatalogues(opts.ScopeCatalogues))
 			r.Mount("/traces", handlers.TracesRouter(reader))
 			r.Mount("/info", handlers.InfoRouter(info))
-			if opts.NodeTelemetry != nil {
-				r.Mount("/node-telemetry", http.StripPrefix("/api/v1/node-telemetry", opts.NodeTelemetry))
-			}
 			r.Mount("/ws-ticket", handlers.WSTicketRouter(tickets))
 			r.Mount("/auth", handlers.AuthRouter(opts.Accounts, opts.AuthOptions))
 			r.Mount("/me", handlers.MeRouter(opts.Accounts, opts.AuthOptions, opts.MeMounts...))

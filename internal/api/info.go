@@ -33,10 +33,9 @@ type Info struct {
 	// MinWebVersion is the oldest allowed Beacon Web version (X.Y.Z); null means no requirement.
 	MinWebVersion *string `json:"minWebVersion" example:"2.0.3"`
 	ServerVersion string  `json:"serverVersion" example:"2.0.2"`
-	BuildVersion  string  `json:"buildVersion,omitempty"`
-	BuildRevision string  `json:"buildRevision,omitempty"`
-	// True when companion telemetry intake/read routes are configured, not a health assertion.
-	CollectedNodeTelemetry bool `json:"collectedNodeTelemetry,omitempty"`
+	// Optional artifact identity; the API compatibility version above is separate.
+	BuildVersion  string `json:"buildVersion,omitempty"`
+	BuildRevision string `json:"buildRevision,omitempty"`
 	// Features tells clients which optional parts of the API this server offers.
 	Features InfoFeatures `json:"features"`
 }
@@ -53,6 +52,9 @@ type InfoFeatures struct {
 	AlertDelivery string `json:"alertDelivery,omitempty" enums:"push,email"`
 	// PortalURL is the sign-in portal's base URL; set only when accounts is "portal".
 	PortalURL string `json:"portalUrl,omitempty" example:"https://portal.example.org"`
+	// AtlasTelemetry is true when the server accepts the telemetry view and telemetryTiles on Atlas pins and the 72h
+	// node telemetry range. Always true on this version.
+	AtlasTelemetry bool `json:"atlasTelemetry" example:"true"`
 }
 
 // WSTicket lets a client that sends no Origin open /ws, in the X-Beacon-Ticket header.

@@ -330,11 +330,6 @@ func (w *Worker) handlePacket(ctx context.Context, iata, pubkeyHex string, raw [
 		w.log.Warn(fmt.Sprintf("invalid pubkey hex from %s/%s", iata, pubkeyHex), "error", err)
 		return
 	}
-	if w.cfg.ReplyHearing != nil && packet.PayloadType() == meshcore.PayloadTypeResponse &&
-		len(pubkeyBytes) == 32 && (envelope.OriginID == "" || strings.EqualFold(envelope.OriginID, pubkeyHex)) &&
-		!strings.EqualFold(envelope.Direction, "tx") && !strings.EqualFold(envelope.Type, "tx") {
-		w.cfg.ReplyHearing(strings.ToLower(pubkeyHex), hexBytes, packet.Payload)
-	}
 
 	id, observerName, err := w.db.UpsertObserver(ctx, pubkeyBytes, iata)
 	if err != nil {
@@ -900,9 +895,6 @@ func (w *Worker) handlePacket(ctx context.Context, iata, pubkeyHex string, raw [
 				resolvedIDs = append(resolvedIDs, entries[0].NodeID)
 			}
 		}
-	}
-	if inserted {
-		w.recordScopeRepeats(ctx, packet, matchedScope, resolved, heardAt, id, iata)
 	}
 	w.runCapabilityDetection(ctx, packet.PayloadType(), hashSize, resolvedIDs)
 

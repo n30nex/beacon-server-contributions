@@ -180,7 +180,7 @@ func TestSetNodeCapability_NeitherSet(t *testing.T) {
 
 	nodeID := uuid.MustParse("00000000-0000-0000-0000-000000000001")
 
-	// no EXPECT â€” neither sqlc method should be called
+	// no EXPECT — neither sqlc method should be called
 	store := &Store{q: mock}
 	err := store.SetNodeCapability(context.Background(), nodeID, false, false)
 	if err != nil {
@@ -420,7 +420,6 @@ func TestGetNode_Stale(t *testing.T) {
 func TestGetNode_ClockDrift_OutOfSync(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	mock := mockdb.NewMockQuerier(ctrl)
-	mock.EXPECT().GetNodeScopeEvidence(gomock.Any(), gomock.Any()).Return([]sqlc.GetNodeScopeEvidenceRow{}, nil).AnyTimes()
 
 	nodeID := uuid.MustParse("00000000-0000-0000-0000-000000000001")
 	drift := int64(-600) // 10 minutes behind, beyond a 5m threshold
@@ -526,7 +525,6 @@ func TestGetNode_ClockDrift_OmittedForCompanion(t *testing.T) {
 func TestGetNode_ClockDrift_OmittedWhenUnmeasured(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	mock := mockdb.NewMockQuerier(ctrl)
-	mock.EXPECT().GetNodeScopeEvidence(gomock.Any(), gomock.Any()).Return([]sqlc.GetNodeScopeEvidenceRow{}, nil).AnyTimes()
 
 	nodeID := uuid.MustParse("00000000-0000-0000-0000-000000000001")
 
@@ -797,7 +795,7 @@ func TestListNodes_NextPageCursor(t *testing.T) {
 
 // List rows carry the node's scope, as node detail does: clients filter and show it.
 func TestNodeListsCarryDefaultScope(t *testing.T) {
-	scope := "#YOW"
+	scope := "#bc"
 	row := sqlc.ListNodesRow{ID: uuid.New(), PublicKey: []byte{1}, DefaultScopeName: &scope}
 	sorted := sqlc.ListNodesSortedRow{ID: uuid.New(), PublicKey: []byte{2}, DefaultScopeName: &scope}
 	ctrl := gomock.NewController(t)

@@ -48,20 +48,11 @@ func TestDecodeRepeatersDocExample(t *testing.T) {
 		t.Fatal("key", got[0].Key)
 	}
 	b, _ := json.Marshal(got[0].Data)
-	var legacy map[string]json.RawMessage
-	_ = json.Unmarshal(b, &legacy)
-	for _, field := range []string{"status", "firstSeen", "lastHeard", "advertBytes", "backbone", "backboneShare", "currentPreset", "radios", "neighbors"} {
-		delete(legacy, field)
-	}
 	want := `{"iata":"YOW","fetchedAt":0,"site":{"power":"1W","hardware":"RAK4631","antenna":"5.8 dBi fibreglass","heightM":12,` +
 		`"heightAslM":341.6,"powerSource":"solar","notes":"On the fire tower, east face"},"carpeater":false,"admins":["MrAlders0n"],` +
 		`"scopes":[{"scope":"yow","observedAt":1791200000000,"observedPackets":37,"proof":"multibyte","reportedAt":1791100000000}],` +
 		`"scopesCheckedAt":1791100000000,"defaultScope":{"name":"yow","state":"named","updatedAt":1791230000000,"source":"advert"}}`
-	var wantFields map[string]json.RawMessage
-	_ = json.Unmarshal([]byte(want), &wantFields)
-	b, _ = json.Marshal(legacy)
-	wantBytes, _ := json.Marshal(wantFields)
-	if string(b) != string(wantBytes) {
+	if string(b) != want {
 		t.Fatalf("got  %s\nwant %s", b, want)
 	}
 }
@@ -123,19 +114,10 @@ func TestDecodeRepeatersLimits(t *testing.T) {
 }
 
 type repeaterMemoryStore struct {
-	access    string
 	iatas     []string
 	rows      map[string]sourceKeyCache
 	repeaters map[string][]Repeater
 	saves     int
-}
-
-func (s *repeaterMemoryStore) PrepareRepeaterAccess(ctx context.Context, fingerprint string) (bool, error) {
-	if s.access == fingerprint {
-		return false, nil
-	}
-	s.access = fingerprint
-	return s.ClearRepeaters(ctx)
 }
 
 type sourceKeyCache struct {
@@ -164,7 +146,7 @@ func (s *repeaterMemoryStore) SaveRepeaterSource(_ context.Context, key, url str
 	if repeaters != nil {
 		s.repeaters[key] = repeaters
 	}
-	if next.CheckedAt.IsZero() && repeaters == nil {
+	if next.CheckedAt.IsZero() {
 		old := s.rows[key]
 		next.CheckedAt, next.ETag = old.cache.CheckedAt, old.cache.ETag
 		if old.url != url {
@@ -378,8 +360,8 @@ func TestRepeatersRateLimitPausesEverySource(t *testing.T) {
 	f.status = 503
 	h.due("YOW")
 	h.refreshN(t, 1)
-	if h.pausedUntil.IsZero() {
-		t.Fatal("503 with Retry-After did not pause the shared read budget")
+	if !h.pausedUntil.IsZero() {
+		t.Fatal("503 paused every source")
 	}
 }
 

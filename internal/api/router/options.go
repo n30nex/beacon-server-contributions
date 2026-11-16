@@ -15,7 +15,6 @@ import (
 // Options names the startup settings used by the router. Adding an optional
 // route does not change New's signature or require unrelated callers to change.
 type Options struct {
-	ScopeCatalogues      handlers.ScopeCatalogueSource
 	MaxConnsPerIP        int
 	MaxConnectsPerMinute int
 	WSSendBytesPerSecond int
@@ -33,7 +32,6 @@ type Options struct {
 	ServerVersion        string
 	BuildVersion         string
 	BuildRevision        string
-	NodeTelemetry        http.Handler // optional validating intake; nil keeps routes disabled
 	// AdminRoutes mounts operator-only subrouters at literal paths such as
 	// "/accounts". Each feature owns its dependencies, methods and handlers.
 	// The router applies authentication to every path and method in this group.

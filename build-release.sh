@@ -10,7 +10,6 @@ set -euo pipefail
 PACKAGE="./cmd/beacon"
 OUTPUT_DIR="binaries"
 VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
-REVISION=$(git rev-parse HEAD)
 
 mkdir -p "$OUTPUT_DIR"
 
@@ -42,7 +41,7 @@ for target in "${targets[@]}"; do
     printf "  %-40s" "${GOOS}/${GOARCH}${GOARM:+v$GOARM}"
 
     env GOOS="$GOOS" GOARCH="$GOARCH" ${GOARM:+GOARM="$GOARM"} \
-        go build -trimpath -ldflags="-s -w -X main.version=${VERSION} -X main.revision=${REVISION}" \
+        go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" \
         -o "${OUTPUT_DIR}/${NAME}" "$PACKAGE"
 
     echo "→ ${OUTPUT_DIR}/${NAME}"

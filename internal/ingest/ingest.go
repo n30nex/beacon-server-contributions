@@ -80,14 +80,11 @@ type Config struct {
 	// Status messages within the same window are deduplicated via ON CONFLICT.
 	// Defaults to 1 hour if zero.
 	TelemetryResolution time.Duration
-	// ReplyHearing must be nonblocking. Only validated RESPONSE packets use it.
-	ReplyHearing func(observer string, raw, payload []byte)
 }
 
 // DB is the minimal database interface the ingest pipeline depends on.
 // Wire in your real *pgxpool.Pool implementation here.
 type DB interface {
-	RecordScopeObservation(ctx context.Context, observation ScopeObservation) error
 	// UpsertObserver upserts the observers row keyed on pubkey, and returns
 	// the Observer ID, Display Name and an error if any.
 	UpsertObserver(ctx context.Context, pubkey []byte, iata string) (uuid.UUID, string, error)

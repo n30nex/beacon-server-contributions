@@ -1324,14 +1324,19 @@ ON CONFLICT (public_key) DO UPDATE SET
 RETURNING *;
 
 -- name: RecordClockDrift :exec
--- Keeps the drift of the node's last 16 adverts: the new one in, the older ones beyond 15 out.
+-- Keep 16 adverts, including the INSERT's row. Sibling CTEs share a snapshot:
+-- the table scan alone cannot see the new row. A conflict returns no extra row.
 WITH ins AS (
     INSERT INTO node_clock_drifts (node_id, advert_at, drift_seconds) VALUES (@node_id, now(), @drift_seconds)
     ON CONFLICT (node_id, advert_at) DO NOTHING
+    RETURNING advert_at
+), recent AS (
+    SELECT advert_at FROM node_clock_drifts WHERE node_id = @node_id
+    UNION ALL SELECT advert_at FROM ins
 )
 DELETE FROM node_clock_drifts x
 WHERE x.node_id = @node_id
-  AND x.advert_at < (SELECT d.advert_at FROM node_clock_drifts d WHERE d.node_id = @node_id ORDER BY d.advert_at DESC OFFSET 15 LIMIT 1);
+  AND x.advert_at < (SELECT advert_at FROM recent ORDER BY advert_at DESC OFFSET 15 LIMIT 1);
 
 -- name: SetNodeMultibytePaths :exec
 UPDATE nodes SET supports_multibyte_paths = TRUE
@@ -1352,7 +1357,7 @@ SELECT n.*, ts.name AS default_scope_name,
    FROM node_iatas ni WHERE ni.node_id = n.id) AS iatas,
   (SELECT COUNT(DISTINCT nn.neighbor_id) FROM node_neighbors nn WHERE nn.node_id = n.id)::bigint AS known_neighbor_count,
   -- The most recently checked source wins when group sites list the same repeater.
-  (SELECT m.data || jsonb_build_object('fetchedAt', (extract(epoch from s.checked_at) * 1000)::bigint, 'refreshFailed', s.last_error <> '')
+  (SELECT m.data || jsonb_build_object('fetchedAt', (extract(epoch from s.checked_at) * 1000)::bigint)
    FROM meshmapper_repeaters m JOIN meshmapper_repeater_sources s ON s.source = m.source
    WHERE m.public_key = n.public_key AND s.checked_at IS NOT NULL
    ORDER BY s.checked_at DESC LIMIT 1)::jsonb AS meshmapper
@@ -1516,7 +1521,7 @@ SELECT public_key FROM nodes WHERE id = $1;
 
 -- name: GetNodeActivityHourly :many
 -- Hours before @tail_start come from the rollup; later ones aren't rolled yet and read raw rows, found through
--- the node's packets first heard in [@packet_from, @packet_until).
+-- the node's recent packets, including older packets heard again in the raw tail.
 WITH src AS (
   SELECT a.hour AS t, a.observations, a.snr_sum, a.snr_n, a.rssi_sum, a.rssi_n, a.hop_sum, a.hop_n
   FROM analytics_hourly_node_activity a
@@ -1530,7 +1535,9 @@ WITH src AS (
   CROSS JOIN LATERAL (SELECT CASE WHEN NOT (COALESCE(po.rssi, 0) = 0 AND COALESCE(po.snr, 0) = 0) THEN po.snr END AS snr,
                              CASE WHEN NOT (COALESCE(po.rssi, 0) = 0 AND COALESCE(po.snr, 0) = 0) THEN po.rssi END AS rssi) s
   WHERE p.origin_pubkey = @origin_pubkey::bytea
-    AND p.first_heard_at >= @packet_from::timestamptz AND p.first_heard_at < @packet_until::timestamptz
+    AND (p.first_heard_at >= @packet_from::timestamptz
+         OR p.last_heard_at >= GREATEST(@since::timestamptz, @tail_start::timestamptz))
+    AND p.first_heard_at < @packet_until::timestamptz
     AND po.heard_at >= GREATEST(@since::timestamptz, @tail_start::timestamptz) AND po.heard_at < @until::timestamptz
 )
 SELECT
@@ -1553,6 +1560,12 @@ FROM packets p
 WHERE p.origin_pubkey = @origin_pubkey::bytea
 ORDER BY p.first_heard_at DESC
 LIMIT 1;
+
+-- name: NodeActivityPending :one
+-- A freshly added activity family is empty until the queued completed hours
+-- are rebuilt. Do not present that period as measured zero traffic.
+SELECT EXISTS(SELECT 1 FROM analytics_dirty_hours
+ WHERE hour >= @since::timestamptz AND hour < @rolled_until::timestamptz)::boolean;
 
 -- ============================================================
 -- NODE IATAS
@@ -2428,20 +2441,19 @@ LIMIT @row_limit;
 -- so a failed/timed-out query doesn't erase a previously known scope.
 -- On conflict, snr and region_scope are only overwritten when a new
 -- non-null value is supplied.
-INSERT INTO node_neighbors (node_id, neighbor_id, iata, observation_count, snr, region_scope, region_scope_checked_at)
-VALUES ($1, $2, $3, 1, $4, $5, CASE WHEN $5::text IS NOT NULL THEN now() ELSE NULL END)
+INSERT INTO node_neighbors (node_id, neighbor_id, iata, observation_count, snr, region_scope)
+VALUES ($1, $2, $3, 1, $4, $5)
 ON CONFLICT (node_id, neighbor_id, iata) DO UPDATE SET
   last_seen         = NOW(),
   observation_count = node_neighbors.observation_count + 1,
   snr               = COALESCE(EXCLUDED.snr, node_neighbors.snr),
-  region_scope      = COALESCE(EXCLUDED.region_scope, node_neighbors.region_scope),
-  region_scope_checked_at = COALESCE(EXCLUDED.region_scope_checked_at, node_neighbors.region_scope_checked_at);
+  region_scope      = COALESCE(EXCLUDED.region_scope, node_neighbors.region_scope);
 
 -- name: UpdateObserverRegionScope :exec
 -- Records the observer's own OTA-reported region scope, from the "self"
 -- field of a /neighbors report. Always known (not queried OTA), so this
 -- unconditionally overwrites, unlike the neighbor-side region_scope.
-UPDATE observers SET region_scope = $2, region_scope_checked_at = now() WHERE id = $1;
+UPDATE observers SET region_scope = $2 WHERE id = $1;
 
 -- name: GetNodeNeighbors :many
 -- Returns the neighbors of a node with details, ordered by most recently seen.
@@ -2737,9 +2749,9 @@ INSERT INTO meshmapper_repeater_sources (source, url, etag, checked_at, attempte
 VALUES (@source, @url, sqlc.narg(etag)::text, sqlc.narg(checked_at)::timestamptz, @attempted_at, @next_attempt, @last_error)
 ON CONFLICT (source) DO UPDATE SET
     url = EXCLUDED.url,
-    etag = CASE WHEN @clear_cached::boolean THEN NULL WHEN meshmapper_repeater_sources.url = EXCLUDED.url
+    etag = CASE WHEN meshmapper_repeater_sources.url = EXCLUDED.url
         THEN COALESCE(EXCLUDED.etag, meshmapper_repeater_sources.etag) ELSE EXCLUDED.etag END,
-    checked_at = CASE WHEN @clear_cached::boolean THEN NULL ELSE COALESCE(EXCLUDED.checked_at, meshmapper_repeater_sources.checked_at) END,
+    checked_at = COALESCE(EXCLUDED.checked_at, meshmapper_repeater_sources.checked_at),
     attempted_at = EXCLUDED.attempted_at,
     next_attempt = EXCLUDED.next_attempt,
     last_error = EXCLUDED.last_error;
@@ -2817,22 +2829,3 @@ JOIN node_short_ids si ON si.iata = ANY(@iatas::bpchar[]) AND
 JOIN nodes n ON n.id=si.node_id
 WHERE substring(n.public_key FROM 1 FOR octet_length(h.hash))=h.hash
 ORDER BY si.iata, h.hash, n.id;
-
--- name: GetTopologyLinks :many
--- Reduce route history to unique adjacent pairs before transferring it to a browser.
--- Keep the exact window while using the surviving millisecond keyset indexes.
-WITH pairs AS (
- SELECT h.a, h.b
- FROM known_routes r CROSS JOIN LATERAL
-   ROWS FROM (unnest(r.node_ids),unnest(r.node_ids[array_lower(r.node_ids,1)+1:])) h(a,b)
- WHERE date_trunc('milliseconds',r.last_seen,'UTC') >= date_trunc('milliseconds',@since::timestamptz,'UTC')
-   AND date_trunc('milliseconds',r.last_seen,'UTC') <= date_trunc('milliseconds',@until::timestamptz,'UTC')
-   AND r.last_seen >= @since::timestamptz AND r.last_seen < @until::timestamptz
-   AND (COALESCE(cardinality(@iatas::bpchar[]),0)=0 OR r.iata=ANY(@iatas::bpchar[]))
-   AND cardinality(r.node_ids)>1
-)
-SELECT LEAST(a,b)::uuid AS from_id, GREATEST(a,b)::uuid AS to_id
-FROM pairs WHERE a IS NOT NULL AND b IS NOT NULL AND a<>b
-GROUP BY LEAST(a,b), GREATEST(a,b)
-ORDER BY LEAST(a,b), GREATEST(a,b)
-LIMIT @link_limit::int;

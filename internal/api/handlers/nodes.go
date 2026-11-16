@@ -36,7 +36,6 @@ func NodesRouter(reader api.Reader, pollingEnabled bool) http.Handler {
 		telemetryReader = unpolledReader{reader}
 	}
 	r.Get("/", listNodes(reader))
-	r.Post("/scopes", nodeScopeBatch(reader))
 	r.Route("/{nodeId}", func(r chi.Router) {
 		r.Get("/", getNode(reader))
 		r.Get("/observations", listNodeObservations(reader))
@@ -224,27 +223,6 @@ func listNodes(reader api.Reader) http.HandlerFunc {
 			respondReaderError(w, err, "internal server error")
 			return
 		}
-		if r.URL.Query().Get("scopeEvidence") == "true" && !includeNeighbors {
-			nodes.Items = append([]api.NodeSummary(nil), nodes.Items...)
-			ids := []uuid.UUID{}
-			for _, n := range nodes.Items {
-				if n.NodeType == 2 {
-					ids = append(ids, n.ID)
-				}
-			}
-			if len(ids) > 0 {
-				evidence, err := reader.GetNodeScopeEvidence(r.Context(), ids)
-				if err != nil {
-					respondReaderError(w, err, "failed to load scope evidence")
-					return
-				}
-				for i := range nodes.Items {
-					if v, ok := evidence[nodes.Items[i].ID.String()]; ok {
-						nodes.Items[i].ScopeEvidence = &v
-					}
-				}
-			}
-		}
 		respond(w, http.StatusOK, nodes)
 	}
 }
@@ -351,7 +329,7 @@ func listNodeObservations(reader api.Reader) http.HandlerFunc {
 //	@Tags		Nodes
 //	@Produce	json
 //	@Param		nodeId	path		string	true	"Node UUID"
-//	@Param		range	query		string	false	"Trailing window as a Go duration, max 720h (default 24h)"
+//	@Param		range	query		string	false	"Trailing hourly window as a Go duration, from 1h to 720h (default 24h)"
 //	@Success	200		{object}	api.NodeActivity
 //	@Failure	400		{object}	handlers.APIError
 //	@Failure	404		{object}	handlers.APIError
@@ -370,8 +348,8 @@ func getNodeActivity(reader api.Reader) http.HandlerFunc {
 			rangeParam = "24h"
 		}
 		window, err := time.ParseDuration(rangeParam)
-		if err != nil || window <= 0 || window > 720*time.Hour {
-			respondError(w, http.StatusBadRequest, "invalid range, use a duration up to 720h e.g. 24h, 168h, 720h")
+		if err != nil || window < time.Hour || window > 720*time.Hour {
+			respondError(w, http.StatusBadRequest, "invalid range, use a duration from 1h to 720h e.g. 24h, 168h, 720h")
 			return
 		}
 		activity, err := reader.GetNodeActivity(r.Context(), nodeID, window)
@@ -429,7 +407,7 @@ func isHexString(s string) bool {
 }
 
 // nodeTelemetryRanges maps each allowed range to its default bucket size.
-var nodeTelemetryRanges = map[string]string{"24h": "1h", "168h": "6h", "720h": "24h"}
+var nodeTelemetryRanges = map[string]string{"24h": "1h", "72h": "1h", "168h": "6h", "720h": "24h"}
 
 var nodeTelemetryIntervals = map[string]time.Duration{"1h": time.Hour, "6h": 6 * time.Hour, "24h": 24 * time.Hour}
 
@@ -440,8 +418,8 @@ var nodeTelemetryIntervals = map[string]time.Duration{"1h": time.Hour, "6h": 6 *
 //	@Tags			Nodes
 //	@Produce		json
 //	@Param			nodeId		path		string	true	"Node UUID"
-//	@Param			range		query		string	false	"Window: 24h, 168h (default) or 720h"	Enums(24h, 168h, 720h)
-//	@Param			interval	query		string	false	"Bucket size: 1h, 6h or 24h. Defaults to 1h for 24h, 6h for 168h, 24h for 720h"	Enums(1h, 6h, 24h)
+//	@Param			range		query		string	false	"Window: 24h, 72h, 168h (default) or 720h"	Enums(24h, 72h, 168h, 720h)
+//	@Param			interval	query		string	false	"Bucket size: 1h, 6h or 24h. Defaults to 1h for 24h and 72h, 6h for 168h, 24h for 720h"	Enums(1h, 6h, 24h)
 //	@Param			include		query		string	false	"untrusted to include readings from observers without advert evidence for the node"	Enums(untrusted)
 //	@Success		200			{object}	api.NodeTelemetry
 //	@Failure		400			{object}	handlers.APIError
@@ -463,7 +441,7 @@ func getNodeTelemetry(reader api.Reader) http.HandlerFunc {
 		}
 		defaultInterval, ok := nodeTelemetryRanges[rangeParam]
 		if !ok {
-			respondError(w, http.StatusBadRequest, "invalid range, use 24h, 168h or 720h")
+			respondError(w, http.StatusBadRequest, "invalid range, use 24h, 72h, 168h or 720h")
 			return
 		}
 		intervalParam := q.Get("interval")

@@ -147,9 +147,6 @@ type Querier interface {
 	DeleteOldPackets(ctx context.Context, arg DeleteOldPacketsParams) (int64, error)
 	// Bumps coverage when hours go, so cached responses that included them are not reused.
 	DeleteOldRollups(ctx context.Context, cutoff pgtype.Timestamptz) error
-	DeleteOldScopeReceivers(ctx context.Context, cutoff pgtype.Timestamptz) (int64, error)
-	DeleteOldScopeRepeats(ctx context.Context, cutoff pgtype.Timestamptz) (int64, error)
-	DeleteOldScopeSamples(ctx context.Context, cutoff pgtype.Timestamptz) (int64, error)
 	DeleteOldServedVersions(ctx context.Context, servedAt pgtype.Timestamptz) error
 	// Deletes telemetry rows older than the given cutoff. Called by the cleanup goroutine.
 	DeleteOldTelemetry(ctx context.Context, reportedAt pgtype.Timestamptz) error
@@ -242,7 +239,7 @@ type Querier interface {
 	// adverts as (sender, forwarder) but traces as (receiver, sender). Callers normalise.
 	GetNeighborLinks(ctx context.Context, arg GetNeighborLinksParams) ([]GetNeighborLinksRow, error)
 	// Hours before @tail_start come from the rollup; later ones aren't rolled yet and read raw rows, found through
-	// the node's packets first heard in [@packet_from, @packet_until).
+	// the node's recent packets, including older packets heard again in the raw tail.
 	GetNodeActivityHourly(ctx context.Context, arg GetNodeActivityHourlyParams) ([]GetNodeActivityHourlyRow, error)
 	GetNodeByID(ctx context.Context, id uuid.UUID) (GetNodeByIDRow, error)
 	GetNodeByPubkey(ctx context.Context, publicKey []byte) (uuid.UUID, error)
@@ -251,9 +248,6 @@ type Querier interface {
 	// Returns the neighbors of a node with details, ordered by most recently seen.
 	GetNodeNeighbors(ctx context.Context, nodeID uuid.UUID) ([]GetNodeNeighborsRow, error)
 	GetNodePublicKey(ctx context.Context, id uuid.UUID) ([]byte, error)
-	// Page IDs keep work bounded; no packet-history scan or external lookup.
-	GetNodeScopeEvidence(ctx context.Context, arg GetNodeScopeEvidenceParams) ([]GetNodeScopeEvidenceRow, error)
-	GetNodeScopeHistory(ctx context.Context, arg GetNodeScopeHistoryParams) ([]GetNodeScopeHistoryRow, error)
 	GetNodesByIDs(ctx context.Context, dollar_1 []uuid.UUID) ([]GetNodesByIDsRow, error)
 	GetNodesByPubkeys(ctx context.Context, pubkeys [][]byte) ([]GetNodesByPubkeysRow, error)
 	GetObservationIDRange(ctx context.Context) (GetObservationIDRangeRow, error)
@@ -314,8 +308,6 @@ type Querier interface {
 	GetScopeByName(ctx context.Context, name string) (GetScopeByNameRow, error)
 	GetScopeCatalogue(ctx context.Context, arg GetScopeCatalogueParams) (MeshmapperScopeCatalogue, error)
 	GetScopeNames(ctx context.Context) ([]string, error)
-	GetScopeReceiverActivity(ctx context.Context, arg GetScopeReceiverActivityParams) ([]GetScopeReceiverActivityRow, error)
-	GetScopeRepeaterActivity(ctx context.Context, arg GetScopeRepeaterActivityParams) ([]GetScopeRepeaterActivityRow, error)
 	// Packets since the given hour come from the IATA-set rollup (counted once per hour heard).
 	// Observer and node counts are current memberships; observers filter by their latest IATA.
 	GetScopeStats(ctx context.Context, arg GetScopeStatsParams) ([]GetScopeStatsRow, error)
@@ -363,9 +355,6 @@ type Querier interface {
 	// The hours walked stay inside the table's own [min(hour), max(hour)]; an empty table walks none
 	// (a NULL start makes generate_series return no rows).
 	GetTopNodesProbe(ctx context.Context, arg GetTopNodesProbeParams) ([]GetTopNodesProbeRow, error)
-	// Reduce route history to unique adjacent pairs before transferring it to a browser.
-	// Keep the exact window while using the surviving millisecond keyset indexes.
-	GetTopologyLinks(ctx context.Context, arg GetTopologyLinksParams) ([]GetTopologyLinksRow, error)
 	GetTransportScopeByName(ctx context.Context, name string) (int32, error)
 	GetTransportScopes(ctx context.Context) ([]GetTransportScopesRow, error)
 	HasLivePollingCandidate(ctx context.Context, arg HasLivePollingCandidateParams) (bool, error)
@@ -651,8 +640,10 @@ type Querier interface {
 	ListUserAtlasPins(ctx context.Context, userID uuid.UUID) ([]ListUserAtlasPinsRow, error)
 	ListUserSessions(ctx context.Context, arg ListUserSessionsParams) ([]ListUserSessionsRow, error)
 	// A user's requests, oldest first, with the node's current id and name, the observer that polls the repeater and
-	// the newest trusted reading. No password column is read; poller_id is the nil uuid when nobody polls it.
-	ListUserTelemetryRequests(ctx context.Context, userID uuid.UUID) ([]ListUserTelemetryRequestsRow, error)
+	// the newest trusted reading. No password column is read; poller_id is the nil uuid when nobody polls it. The
+	// poller's own claim is live when received after received_after: poller_claim_at is null without one, and
+	// poller_claimed says whether that claim lists the repeater (poller_state is its state then).
+	ListUserTelemetryRequests(ctx context.Context, arg ListUserTelemetryRequestsParams) ([]ListUserTelemetryRequestsRow, error)
 	// search is a LIKE pattern with its wildcards already escaped, or empty for everyone. The cursor is the last row of
 	// the previous page; the first page passes a far-future time and the max uuid.
 	ListUsers(ctx context.Context, arg ListUsersParams) ([]User, error)
@@ -688,6 +679,9 @@ type Querier interface {
 	MinObservationID(ctx context.Context) (int64, error)
 	// The first message id above after_id, or 0 when there is none.
 	NextChannelMessageID(ctx context.Context, afterID int64) (int64, error)
+	// A freshly added activity family is empty until the queued completed hours
+	// are rebuilt. Do not present that period as measured zero traffic.
+	NodeActivityPending(ctx context.Context, arg NodeActivityPendingParams) (bool, error)
 	NodeHasReadings(ctx context.Context, targetPublicKey []byte) (bool, error)
 	NodeIDsByKeys(ctx context.Context, dollar_1 [][]byte) ([]NodeIDsByKeysRow, error)
 	NodeLatestTrustedReadingAt(ctx context.Context, targetPublicKey []byte) (pgtype.Timestamptz, error)
@@ -745,12 +739,9 @@ type Querier interface {
 	ReconfirmRoutesBatch(ctx context.Context, arg ReconfirmRoutesBatchParams) (ReconfirmRoutesBatchRow, error)
 	// Key of the last route in a slice that timed out: the caller passes the slice's row count - 1.
 	ReconfirmSliceEnd(ctx context.Context, arg ReconfirmSliceEndParams) (ReconfirmSliceEndRow, error)
-	// Keeps the drift of the node's last 16 adverts: the new one in, the older ones beyond 15 out.
+	// Keep 16 adverts, including the INSERT's row. Sibling CTEs share a snapshot:
+	// the table scan alone cannot see the new row. A conflict returns no extra row.
 	RecordClockDrift(ctx context.Context, arg RecordClockDriftParams) error
-	RecordScopeObservation(ctx context.Context, arg RecordScopeObservationParams) error
-	// One accepted MQTT hearing, one vote per distinct resolved repeater. These are
-	// repeat observations, NOT unique RF transmissions or configuration claims.
-	RecordScopeRepeats(ctx context.Context, arg RecordScopeRepeatsParams) error
 	// Written on every owners answer that lists the target, so it only touches the row when the version changed or the
 	// last write is an hour old.
 	RecordServedVersion(ctx context.Context, arg RecordServedVersionParams) error

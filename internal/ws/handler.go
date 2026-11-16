@@ -7,12 +7,12 @@
 //
 //	On connect: server sends hello { v:1, type:"hello", serverTime:<ms>, connectionId:"uuid" }
 //
-//	Client â†’ Server:
-//	  subscribe   { v, type, id, scope }         â†’ server replies subscribed { v, type, id, subscriptionId }
-//	  unsubscribe { v, type, id, subscriptionId } â†’ server replies unsubscribed { v, type, id, subscriptionId }
+//	Client → Server:
+//	  subscribe   { v, type, id, scope }         → server replies subscribed { v, type, id, subscriptionId }
+//	  unsubscribe { v, type, id, subscriptionId } → server replies unsubscribed { v, type, id, subscriptionId }
 //	  configure   { v, type, id, resolvePath, includeObserverKey, includeRepeats }
-//	              â†’ server replies configured { v, type, id, resolvePath, includeObserverKey, includeRepeats }
-//	  ping        { v, type, id }                â†’ server replies pong { v, type, id }
+//	              → server replies configured { v, type, id, resolvePath, includeObserverKey, includeRepeats }
+//	  ping        { v, type, id }                → server replies pong { v, type, id }
 //
 //	configure's flags are connection-wide settings, not per-subscription.
 //	resolvePath adds per-hop resolvedPath data to packetObservation events,
@@ -22,7 +22,7 @@
 //	observationCount 0. Each configure sets all three to exactly the values
 //	sent, so an omitted flag turns off. All default false.
 //
-//	Server â†’ Client events (unsolicited):
+//	Server → Client events (unsolicited):
 //	  packetObservation, observerStatus, nodeUpdate, channelMessage
 //	  lagged { v, type, droppedCount, since }
 //
@@ -236,7 +236,7 @@ func Handler(h *hub.Hub, reader api.Reader, limits Limits, access Access) http.H
 	}
 }
 
-// clientMessage is the shape of every client â†’ server message.
+// clientMessage is the shape of every client → server message.
 type clientMessage struct {
 	V              int             `json:"v"`
 	Type           string          `json:"type"`

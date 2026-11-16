@@ -790,7 +790,9 @@ WITH src AS (
   CROSS JOIN LATERAL (SELECT CASE WHEN NOT (COALESCE(po.rssi, 0) = 0 AND COALESCE(po.snr, 0) = 0) THEN po.snr END AS snr,
                              CASE WHEN NOT (COALESCE(po.rssi, 0) = 0 AND COALESCE(po.snr, 0) = 0) THEN po.rssi END AS rssi) s
   WHERE p.origin_pubkey = $1::bytea
-    AND p.first_heard_at >= $5::timestamptz AND p.first_heard_at < $6::timestamptz
+    AND (p.first_heard_at >= $5::timestamptz
+         OR p.last_heard_at >= GREATEST($2::timestamptz, $4::timestamptz))
+    AND p.first_heard_at < $6::timestamptz
     AND po.heard_at >= GREATEST($2::timestamptz, $4::timestamptz) AND po.heard_at < $3::timestamptz
 )
 SELECT
@@ -828,7 +830,7 @@ type GetNodeActivityHourlyRow struct {
 }
 
 // Hours before @tail_start come from the rollup; later ones aren't rolled yet and read raw rows, found through
-// the node's packets first heard in [@packet_from, @packet_until).
+// the node's recent packets, including older packets heard again in the raw tail.
 func (q *Queries) GetNodeActivityHourly(ctx context.Context, arg GetNodeActivityHourlyParams) ([]GetNodeActivityHourlyRow, error) {
 	rows, err := q.db.Query(ctx, getNodeActivityHourly,
 		arg.OriginPubkey,
@@ -873,7 +875,7 @@ SELECT n.id, n.public_key, n.node_type, n.name, n.latitude, n.longitude, n.locat
    FROM node_iatas ni WHERE ni.node_id = n.id) AS iatas,
   (SELECT COUNT(DISTINCT nn.neighbor_id) FROM node_neighbors nn WHERE nn.node_id = n.id)::bigint AS known_neighbor_count,
   -- The most recently checked source wins when group sites list the same repeater.
-  (SELECT m.data || jsonb_build_object('fetchedAt', (extract(epoch from s.checked_at) * 1000)::bigint, 'refreshFailed', s.last_error <> '')
+  (SELECT m.data || jsonb_build_object('fetchedAt', (extract(epoch from s.checked_at) * 1000)::bigint)
    FROM meshmapper_repeaters m JOIN meshmapper_repeater_sources s ON s.source = m.source
    WHERE m.public_key = n.public_key AND s.checked_at IS NOT NULL
    ORDER BY s.checked_at DESC LIMIT 1)::jsonb AS meshmapper
@@ -1438,7 +1440,7 @@ func (q *Queries) GetObserverBrokers(ctx context.Context, observerID uuid.UUID) 
 }
 
 const getObserverByID = `-- name: GetObserverByID :one
-SELECT id, public_key, display_name, observer_type, software_version, hardware_model, firmware_version, firmware_build, radio_freq_mhz, radio_sf, radio_bw_khz, radio_cr, battery_level, uptime_seconds, status_metadata, last_status_at, first_seen, last_seen, observation_count, metadata, region_scope, last_iata, last_iata_at, region_scope_checked_at FROM observers WHERE id = $1
+SELECT id, public_key, display_name, observer_type, software_version, hardware_model, firmware_version, firmware_build, radio_freq_mhz, radio_sf, radio_bw_khz, radio_cr, battery_level, uptime_seconds, status_metadata, last_status_at, first_seen, last_seen, observation_count, metadata, region_scope, last_iata, last_iata_at FROM observers WHERE id = $1
 `
 
 func (q *Queries) GetObserverByID(ctx context.Context, id uuid.UUID) (Observer, error) {
@@ -1468,13 +1470,12 @@ func (q *Queries) GetObserverByID(ctx context.Context, id uuid.UUID) (Observer, 
 		&i.RegionScope,
 		&i.LastIata,
 		&i.LastIataAt,
-		&i.RegionScopeCheckedAt,
 	)
 	return i, err
 }
 
 const getObserverByPubkey = `-- name: GetObserverByPubkey :one
-SELECT id, public_key, display_name, observer_type, software_version, hardware_model, firmware_version, firmware_build, radio_freq_mhz, radio_sf, radio_bw_khz, radio_cr, battery_level, uptime_seconds, status_metadata, last_status_at, first_seen, last_seen, observation_count, metadata, region_scope, last_iata, last_iata_at, region_scope_checked_at FROM observers WHERE public_key = $1
+SELECT id, public_key, display_name, observer_type, software_version, hardware_model, firmware_version, firmware_build, radio_freq_mhz, radio_sf, radio_bw_khz, radio_cr, battery_level, uptime_seconds, status_metadata, last_status_at, first_seen, last_seen, observation_count, metadata, region_scope, last_iata, last_iata_at FROM observers WHERE public_key = $1
 `
 
 func (q *Queries) GetObserverByPubkey(ctx context.Context, publicKey []byte) (Observer, error) {
@@ -1504,7 +1505,6 @@ func (q *Queries) GetObserverByPubkey(ctx context.Context, publicKey []byte) (Ob
 		&i.RegionScope,
 		&i.LastIata,
 		&i.LastIataAt,
-		&i.RegionScopeCheckedAt,
 	)
 	return i, err
 }
@@ -2870,63 +2870,6 @@ func (q *Queries) GetTopNodesProbe(ctx context.Context, arg GetTopNodesProbePara
 			&i.ObservationCount,
 			&i.LastHeard,
 		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const getTopologyLinks = `-- name: GetTopologyLinks :many
-WITH pairs AS (
- SELECT h.a, h.b
- FROM known_routes r CROSS JOIN LATERAL
-   ROWS FROM (unnest(r.node_ids),unnest(r.node_ids[array_lower(r.node_ids,1)+1:])) h(a,b)
- WHERE date_trunc('milliseconds',r.last_seen,'UTC') >= date_trunc('milliseconds',$2::timestamptz,'UTC')
-   AND date_trunc('milliseconds',r.last_seen,'UTC') <= date_trunc('milliseconds',$3::timestamptz,'UTC')
-   AND r.last_seen >= $2::timestamptz AND r.last_seen < $3::timestamptz
-   AND (COALESCE(cardinality($4::bpchar[]),0)=0 OR r.iata=ANY($4::bpchar[]))
-   AND cardinality(r.node_ids)>1
-)
-SELECT LEAST(a,b)::uuid AS from_id, GREATEST(a,b)::uuid AS to_id
-FROM pairs WHERE a IS NOT NULL AND b IS NOT NULL AND a<>b
-GROUP BY LEAST(a,b), GREATEST(a,b)
-ORDER BY LEAST(a,b), GREATEST(a,b)
-LIMIT $1::int
-`
-
-type GetTopologyLinksParams struct {
-	LinkLimit int32              `json:"link_limit"`
-	Since     pgtype.Timestamptz `json:"since"`
-	Until     pgtype.Timestamptz `json:"until"`
-	Iatas     []string           `json:"iatas"`
-}
-
-type GetTopologyLinksRow struct {
-	FromID uuid.UUID `json:"from_id"`
-	ToID   uuid.UUID `json:"to_id"`
-}
-
-// Reduce route history to unique adjacent pairs before transferring it to a browser.
-// Keep the exact window while using the surviving millisecond keyset indexes.
-func (q *Queries) GetTopologyLinks(ctx context.Context, arg GetTopologyLinksParams) ([]GetTopologyLinksRow, error) {
-	rows, err := q.db.Query(ctx, getTopologyLinks,
-		arg.LinkLimit,
-		arg.Since,
-		arg.Until,
-		arg.Iatas,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []GetTopologyLinksRow{}
-	for rows.Next() {
-		var i GetTopologyLinksRow
-		if err := rows.Scan(&i.FromID, &i.ToID); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -6536,6 +6479,25 @@ func (q *Queries) ListZoneLists(ctx context.Context) ([]MeshmapperZoneList, erro
 	return items, nil
 }
 
+const nodeActivityPending = `-- name: NodeActivityPending :one
+SELECT EXISTS(SELECT 1 FROM analytics_dirty_hours
+ WHERE hour >= $1::timestamptz AND hour < $2::timestamptz)::boolean
+`
+
+type NodeActivityPendingParams struct {
+	Since       pgtype.Timestamptz `json:"since"`
+	RolledUntil pgtype.Timestamptz `json:"rolled_until"`
+}
+
+// A freshly added activity family is empty until the queued completed hours
+// are rebuilt. Do not present that period as measured zero traffic.
+func (q *Queries) NodeActivityPending(ctx context.Context, arg NodeActivityPendingParams) (bool, error) {
+	row := q.db.QueryRow(ctx, nodeActivityPending, arg.Since, arg.RolledUntil)
+	var column_1 bool
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const pruneImportedRegions = `-- name: PruneImportedRegions :many
 DELETE FROM regions WHERE imported AND NOT (slug = ANY($1::text[])) RETURNING slug
 `
@@ -6694,10 +6656,14 @@ const recordClockDrift = `-- name: RecordClockDrift :exec
 WITH ins AS (
     INSERT INTO node_clock_drifts (node_id, advert_at, drift_seconds) VALUES ($1, now(), $2)
     ON CONFLICT (node_id, advert_at) DO NOTHING
+    RETURNING advert_at
+), recent AS (
+    SELECT advert_at FROM node_clock_drifts WHERE node_id = $1
+    UNION ALL SELECT advert_at FROM ins
 )
 DELETE FROM node_clock_drifts x
 WHERE x.node_id = $1
-  AND x.advert_at < (SELECT d.advert_at FROM node_clock_drifts d WHERE d.node_id = $1 ORDER BY d.advert_at DESC OFFSET 15 LIMIT 1)
+  AND x.advert_at < (SELECT advert_at FROM recent ORDER BY advert_at DESC OFFSET 15 LIMIT 1)
 `
 
 type RecordClockDriftParams struct {
@@ -6705,7 +6671,8 @@ type RecordClockDriftParams struct {
 	DriftSeconds int64     `json:"drift_seconds"`
 }
 
-// Keeps the drift of the node's last 16 adverts: the new one in, the older ones beyond 15 out.
+// Keep 16 adverts, including the INSERT's row. Sibling CTEs share a snapshot:
+// the table scan alone cannot see the new row. A conflict returns no extra row.
 func (q *Queries) RecordClockDrift(ctx context.Context, arg RecordClockDriftParams) error {
 	_, err := q.db.Exec(ctx, recordClockDrift, arg.NodeID, arg.DriftSeconds)
 	return err
@@ -7365,9 +7332,9 @@ INSERT INTO meshmapper_repeater_sources (source, url, etag, checked_at, attempte
 VALUES ($1, $2, $3::text, $4::timestamptz, $5, $6, $7)
 ON CONFLICT (source) DO UPDATE SET
     url = EXCLUDED.url,
-    etag = CASE WHEN $8::boolean THEN NULL WHEN meshmapper_repeater_sources.url = EXCLUDED.url
+    etag = CASE WHEN meshmapper_repeater_sources.url = EXCLUDED.url
         THEN COALESCE(EXCLUDED.etag, meshmapper_repeater_sources.etag) ELSE EXCLUDED.etag END,
-    checked_at = CASE WHEN $8::boolean THEN NULL ELSE COALESCE(EXCLUDED.checked_at, meshmapper_repeater_sources.checked_at) END,
+    checked_at = COALESCE(EXCLUDED.checked_at, meshmapper_repeater_sources.checked_at),
     attempted_at = EXCLUDED.attempted_at,
     next_attempt = EXCLUDED.next_attempt,
     last_error = EXCLUDED.last_error
@@ -7381,7 +7348,6 @@ type SaveRepeaterSourceParams struct {
 	AttemptedAt pgtype.Timestamptz `json:"attempted_at"`
 	NextAttempt pgtype.Timestamptz `json:"next_attempt"`
 	LastError   string             `json:"last_error"`
-	ClearCached bool               `json:"clear_cached"`
 }
 
 // NULL etag/checked_at retain the last good list's state after an error or 304;
@@ -7395,7 +7361,6 @@ func (q *Queries) SaveRepeaterSource(ctx context.Context, arg SaveRepeaterSource
 		arg.AttemptedAt,
 		arg.NextAttempt,
 		arg.LastError,
-		arg.ClearCached,
 	)
 	return err
 }
@@ -7926,7 +7891,7 @@ func (q *Queries) TouchPackets(ctx context.Context, arg TouchPacketsParams) erro
 }
 
 const updateObserverRegionScope = `-- name: UpdateObserverRegionScope :exec
-UPDATE observers SET region_scope = $2, region_scope_checked_at = now() WHERE id = $1
+UPDATE observers SET region_scope = $2 WHERE id = $1
 `
 
 type UpdateObserverRegionScopeParams struct {
@@ -8363,14 +8328,13 @@ func (q *Queries) UpsertNodeIATA(ctx context.Context, arg UpsertNodeIATAParams) 
 
 const upsertNodeNeighbor = `-- name: UpsertNodeNeighbor :exec
 
-INSERT INTO node_neighbors (node_id, neighbor_id, iata, observation_count, snr, region_scope, region_scope_checked_at)
-VALUES ($1, $2, $3, 1, $4, $5, CASE WHEN $5::text IS NOT NULL THEN now() ELSE NULL END)
+INSERT INTO node_neighbors (node_id, neighbor_id, iata, observation_count, snr, region_scope)
+VALUES ($1, $2, $3, 1, $4, $5)
 ON CONFLICT (node_id, neighbor_id, iata) DO UPDATE SET
   last_seen         = NOW(),
   observation_count = node_neighbors.observation_count + 1,
   snr               = COALESCE(EXCLUDED.snr, node_neighbors.snr),
-  region_scope      = COALESCE(EXCLUDED.region_scope, node_neighbors.region_scope),
-  region_scope_checked_at = COALESCE(EXCLUDED.region_scope_checked_at, node_neighbors.region_scope_checked_at)
+  region_scope      = COALESCE(EXCLUDED.region_scope, node_neighbors.region_scope)
 `
 
 type UpsertNodeNeighborParams struct {
@@ -8432,7 +8396,7 @@ ON CONFLICT (public_key) DO UPDATE SET
                             AND (observers.last_iata_at IS NULL OR EXCLUDED.last_iata_at > observers.last_iata_at)
                            THEN EXCLUDED.last_iata ELSE observers.last_iata END,
   last_iata_at      = GREATEST(observers.last_iata_at, EXCLUDED.last_iata_at)
-RETURNING id, public_key, display_name, observer_type, software_version, hardware_model, firmware_version, firmware_build, radio_freq_mhz, radio_sf, radio_bw_khz, radio_cr, battery_level, uptime_seconds, status_metadata, last_status_at, first_seen, last_seen, observation_count, metadata, region_scope, last_iata, last_iata_at, region_scope_checked_at
+RETURNING id, public_key, display_name, observer_type, software_version, hardware_model, firmware_version, firmware_build, radio_freq_mhz, radio_sf, radio_bw_khz, radio_cr, battery_level, uptime_seconds, status_metadata, last_status_at, first_seen, last_seen, observation_count, metadata, region_scope, last_iata, last_iata_at
 `
 
 type UpsertObserverParams struct {
@@ -8472,7 +8436,6 @@ func (q *Queries) UpsertObserver(ctx context.Context, arg UpsertObserverParams) 
 		&i.RegionScope,
 		&i.LastIata,
 		&i.LastIataAt,
-		&i.RegionScopeCheckedAt,
 	)
 	return i, err
 }

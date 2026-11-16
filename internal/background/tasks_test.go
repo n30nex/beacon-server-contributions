@@ -246,5 +246,3 @@ func TestCleanupTask(t *testing.T) {
 		})
 	}
 }
-
-func (s *cleanupStub) DeleteOldScopeRepeats(context.Context, time.Time) error { return nil }
