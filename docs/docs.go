@@ -7966,7 +7966,7 @@ const docTemplate = `{
             "properties": {
                 "limit": {
                     "type": "integer",
-                    "example": 12
+                    "example": 20
                 },
                 "pins": {
                     "type": "array",
@@ -8491,6 +8491,14 @@ const docTemplate = `{
                         }
                     ]
                 },
+                "limits": {
+                    "description": "Limits are the instance caps clients enforce before asking.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/github_com_MeshCore-Beacon_beacon-server_internal_api.InfoLimits"
+                        }
+                    ]
+                },
                 "minAppVersion": {
                     "description": "MinAppVersion is the oldest allowed app version (X.Y.Z); null means no requirement.",
                     "type": "string",
@@ -8574,6 +8582,16 @@ const docTemplate = `{
                 "telemetryRequests": {
                     "type": "boolean",
                     "example": false
+                }
+            }
+        },
+        "github_com_MeshCore-Beacon_beacon-server_internal_api.InfoLimits": {
+            "type": "object",
+            "properties": {
+                "atlas": {
+                    "description": "Atlas is the most cards one Atlas holds, in the browser or synced to an account.",
+                    "type": "integer",
+                    "example": 20
                 }
             }
         },
@@ -11755,7 +11773,7 @@ const docTemplate = `{
 
 // SwaggerInfo holds exported Swagger Info so clients can modify it
 var SwaggerInfo = &swag.Spec{
-	Version:          "2.2.0",
+	Version:          "2.3.0",
 	Host:             "localhost:8080",
 	BasePath:         "/api/v1",
 	Schemes:          []string{"http", "https"},
