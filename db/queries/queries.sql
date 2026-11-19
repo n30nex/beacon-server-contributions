@@ -2636,18 +2636,13 @@ ORDER BY slice.iata DESC, slice.path_key DESC LIMIT 1;
 DELETE FROM node_neighbors nn
 WHERE NOT EXISTS (
     SELECT 1 FROM node_short_ids ns
-    WHERE ns.node_id = nn.neighbor_id
-      AND ns.iata = nn.iata
-)
-OR (
-    SELECT COUNT(*) FROM node_short_ids ns
-    WHERE ns.iata = nn.iata
-      AND ns.prefix_4 = (
-          SELECT prefix_4 FROM node_short_ids
-          WHERE node_id = nn.neighbor_id
-            AND iata = nn.iata
+    WHERE ns.node_id = nn.neighbor_id AND ns.iata = nn.iata
+      AND NOT EXISTS (
+          SELECT 1 FROM node_short_ids other
+          WHERE other.iata = ns.iata AND other.prefix_4 = ns.prefix_4
+            AND other.node_id <> ns.node_id
       )
-) > 1;
+);
 
 -- name: CreateAccount :one
 INSERT INTO accounts (name) VALUES (sqlc.arg(name))
