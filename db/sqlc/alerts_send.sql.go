@@ -21,19 +21,54 @@ func (q *Queries) BeginAlertPass(ctx context.Context, passID uuid.UUID) error {
 	return err
 }
 
-const bumpAlertAttempts = `-- name: BumpAlertAttempts :exec
-UPDATE alert_outbox SET attempts = attempts + 1, next_attempt_at = $1::timestamptz + interval '1 minute' * power(2, attempts)
-WHERE id = ANY($2::bigint[])
+const bumpAlertEmailAttempts = `-- name: BumpAlertEmailAttempts :exec
+UPDATE alert_outbox SET email_attempts = email_attempts + 1,
+    email_next_attempt_at = GREATEST($1::timestamptz + interval '1 minute' * power(2, email_attempts), $2::timestamptz),
+    email_done_at = CASE WHEN email_attempts + 1 >= $3::int THEN $1 ELSE email_done_at END
+WHERE id = ANY($4::bigint[]) AND email_done_at IS NULL
 `
 
-type BumpAlertAttemptsParams struct {
-	At  pgtype.Timestamptz `json:"at"`
-	Ids []int64            `json:"ids"`
+type BumpAlertEmailAttemptsParams struct {
+	At          pgtype.Timestamptz `json:"at"`
+	HoldUntil   pgtype.Timestamptz `json:"hold_until"`
+	MaxAttempts int32              `json:"max_attempts"`
+	Ids         []int64            `json:"ids"`
 }
 
-// Counts a failed attempt and holds the notice back for a minute, doubling with each earlier failure.
-func (q *Queries) BumpAlertAttempts(ctx context.Context, arg BumpAlertAttemptsParams) error {
-	_, err := q.db.Exec(ctx, bumpAlertAttempts, arg.At, arg.Ids)
+// Counts a failed mail and holds it back for a minute, doubling with each earlier failure; the last allowed failure
+// ends the channel.
+func (q *Queries) BumpAlertEmailAttempts(ctx context.Context, arg BumpAlertEmailAttemptsParams) error {
+	_, err := q.db.Exec(ctx, bumpAlertEmailAttempts,
+		arg.At,
+		arg.HoldUntil,
+		arg.MaxAttempts,
+		arg.Ids,
+	)
+	return err
+}
+
+const bumpAlertPushAttempts = `-- name: BumpAlertPushAttempts :exec
+UPDATE alert_outbox SET push_attempts = push_attempts + 1,
+    push_next_attempt_at = GREATEST($1::timestamptz + interval '1 minute' * power(2, push_attempts), $2::timestamptz),
+    push_done_at = CASE WHEN push_attempts + 1 >= $3::int THEN $1 ELSE push_done_at END
+WHERE id = ANY($4::bigint[]) AND push_done_at IS NULL
+`
+
+type BumpAlertPushAttemptsParams struct {
+	At          pgtype.Timestamptz `json:"at"`
+	HoldUntil   pgtype.Timestamptz `json:"hold_until"`
+	MaxAttempts int32              `json:"max_attempts"`
+	Ids         []int64            `json:"ids"`
+}
+
+// As for mail, or held until hold_until when the push server asked for longer.
+func (q *Queries) BumpAlertPushAttempts(ctx context.Context, arg BumpAlertPushAttemptsParams) error {
+	_, err := q.db.Exec(ctx, bumpAlertPushAttempts,
+		arg.At,
+		arg.HoldUntil,
+		arg.MaxAttempts,
+		arg.Ids,
+	)
 	return err
 }
 
@@ -47,11 +82,19 @@ func (q *Queries) DeleteDevicesByToken(ctx context.Context, pushToken string) er
 }
 
 const deleteExhaustedAlerts = `-- name: DeleteExhaustedAlerts :execrows
-DELETE FROM alert_outbox WHERE delivered_at IS NULL AND attempts >= $1
+DELETE FROM alert_outbox
+WHERE id = ANY($1::bigint[]) AND delivered_at IS NULL AND email_done_at IS NOT NULL AND push_done_at IS NOT NULL
+  AND (email_attempts >= $2::int OR push_attempts >= $2::int)
 `
 
-func (q *Queries) DeleteExhaustedAlerts(ctx context.Context, maxAttempts int16) (int64, error) {
-	result, err := q.db.Exec(ctx, deleteExhaustedAlerts, maxAttempts)
+type DeleteExhaustedAlertsParams struct {
+	Ids         []int64 `json:"ids"`
+	MaxAttempts int32   `json:"max_attempts"`
+}
+
+// A finished notice that ran out of attempts on a channel is dropped.
+func (q *Queries) DeleteExhaustedAlerts(ctx context.Context, arg DeleteExhaustedAlertsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteExhaustedAlerts, arg.Ids, arg.MaxAttempts)
 	if err != nil {
 		return 0, err
 	}
@@ -125,18 +168,35 @@ func (q *Queries) FinishAlertPass(ctx context.Context, passID uuid.UUID) error {
 	return err
 }
 
+const holdAlertPush = `-- name: HoldAlertPush :exec
+UPDATE alert_outbox SET push_next_attempt_at = $1::timestamptz
+WHERE id = ANY($2::bigint[]) AND push_done_at IS NULL
+`
+
+type HoldAlertPushParams struct {
+	HoldUntil pgtype.Timestamptz `json:"hold_until"`
+	Ids       []int64            `json:"ids"`
+}
+
+// A rate-limited push waits until hold_until; no attempt is counted.
+func (q *Queries) HoldAlertPush(ctx context.Context, arg HoldAlertPushParams) error {
+	_, err := q.db.Exec(ctx, holdAlertPush, arg.HoldUntil, arg.Ids)
+	return err
+}
+
 const liveUserDevices = `-- name: LiveUserDevices :many
-SELECT d.session_id, d.user_id, d.platform, d.push_token
+SELECT d.session_id, d.user_id, d.platform, d.push_token, d.payload_key
 FROM user_devices d JOIN user_sessions s ON s.id = d.session_id
 WHERE d.user_id = ANY($1::uuid[])
   AND s.ended_at IS NULL AND s.expires_at > now() AND (s.hard_expires_at IS NULL OR s.hard_expires_at > now())
 `
 
 type LiveUserDevicesRow struct {
-	SessionID uuid.UUID `json:"session_id"`
-	UserID    uuid.UUID `json:"user_id"`
-	Platform  string    `json:"platform"`
-	PushToken string    `json:"push_token"`
+	SessionID  uuid.UUID `json:"session_id"`
+	UserID     uuid.UUID `json:"user_id"`
+	Platform   string    `json:"platform"`
+	PushToken  string    `json:"push_token"`
+	PayloadKey []byte    `json:"payload_key"`
 }
 
 func (q *Queries) LiveUserDevices(ctx context.Context, userIds []uuid.UUID) ([]LiveUserDevicesRow, error) {
@@ -153,6 +213,7 @@ func (q *Queries) LiveUserDevices(ctx context.Context, userIds []uuid.UUID) ([]L
 			&i.UserID,
 			&i.Platform,
 			&i.PushToken,
+			&i.PayloadKey,
 		); err != nil {
 			return nil, err
 		}
@@ -182,7 +243,8 @@ func (q *Queries) MarkAlertDeviceDelivered(ctx context.Context, arg MarkAlertDev
 }
 
 const markAlertsDelivered = `-- name: MarkAlertsDelivered :exec
-UPDATE alert_outbox SET delivered_at = $1 WHERE id = ANY($2::bigint[])
+UPDATE alert_outbox SET delivered_at = $1
+WHERE id = ANY($2::bigint[]) AND delivered_at IS NULL AND email_done_at IS NOT NULL AND push_done_at IS NOT NULL
 `
 
 type MarkAlertsDeliveredParams struct {
@@ -190,30 +252,67 @@ type MarkAlertsDeliveredParams struct {
 	Ids []int64            `json:"ids"`
 }
 
+// A notice is delivered once both channels are done.
 func (q *Queries) MarkAlertsDelivered(ctx context.Context, arg MarkAlertsDeliveredParams) error {
 	_, err := q.db.Exec(ctx, markAlertsDelivered, arg.At, arg.Ids)
 	return err
 }
 
+const markAlertsEmailDone = `-- name: MarkAlertsEmailDone :exec
+UPDATE alert_outbox SET email_done_at = COALESCE(email_done_at, $1),
+    email_sent_at = CASE WHEN $2::boolean THEN COALESCE(email_sent_at, $1) ELSE email_sent_at END
+WHERE id = ANY($3::bigint[])
+`
+
+type MarkAlertsEmailDoneParams struct {
+	At   pgtype.Timestamptz `json:"at"`
+	Sent bool               `json:"sent"`
+	Ids  []int64            `json:"ids"`
+}
+
+// The mail went out (sent_at set) or none was needed.
+func (q *Queries) MarkAlertsEmailDone(ctx context.Context, arg MarkAlertsEmailDoneParams) error {
+	_, err := q.db.Exec(ctx, markAlertsEmailDone, arg.At, arg.Sent, arg.Ids)
+	return err
+}
+
+const markAlertsPushDone = `-- name: MarkAlertsPushDone :exec
+UPDATE alert_outbox SET push_done_at = COALESCE(push_done_at, $1) WHERE id = ANY($2::bigint[])
+`
+
+type MarkAlertsPushDoneParams struct {
+	At  pgtype.Timestamptz `json:"at"`
+	Ids []int64            `json:"ids"`
+}
+
+func (q *Queries) MarkAlertsPushDone(ctx context.Context, arg MarkAlertsPushDoneParams) error {
+	_, err := q.db.Exec(ctx, markAlertsPushDone, arg.At, arg.Ids)
+	return err
+}
+
 const pendingAlerts = `-- name: PendingAlerts :many
 WITH p AS (
-    SELECT o.id, o.user_id, o.pass_id, o.target_kind, o.target_public_key, o.name, o.alert_kind, COALESCE(o.value, 0)::bigint AS value,
-           o.detail, o.attempts, u.email, (u.email_verified_at IS NOT NULL)::boolean AS email_verified,
+    SELECT o.id, o.user_id, o.pass_id, o.target_kind, o.target_public_key, o.name, o.alert_kind, o.value,
+           o.detail, o.push_attempts, u.email, (u.email_verified_at IS NOT NULL)::boolean AS email_verified,
+           u.alert_email, u.alert_push,
+           (o.email_done_at IS NULL AND (o.email_next_attempt_at IS NULL OR o.email_next_attempt_at <= $2))::boolean AS email_due,
+           (o.push_done_at IS NULL AND (o.push_next_attempt_at IS NULL OR o.push_next_attempt_at <= $2))::boolean AS push_due,
            COALESCE(CASE WHEN o.target_kind = 'observer' THEN ob.id ELSE n.id END, '00000000-0000-0000-0000-000000000000'::uuid)::uuid AS target_id
     FROM alert_outbox o
     JOIN users u ON u.id = o.user_id AND u.disabled_at IS NULL
     LEFT JOIN nodes n ON o.target_kind = 'node' AND n.public_key = o.target_public_key
     LEFT JOIN observers ob ON o.target_kind = 'observer' AND ob.public_key = o.target_public_key
     LEFT JOIN alert_passes ap ON ap.pass_id = o.pass_id
-    WHERE (ap.pass_id IS NULL OR ap.finished_at IS NOT NULL OR ap.started_at < $2)
-      AND o.delivered_at IS NULL AND o.created_at >= $3
-      AND (o.next_attempt_at IS NULL OR o.next_attempt_at <= $4)
+    WHERE (ap.pass_id IS NULL OR ap.finished_at IS NOT NULL OR ap.started_at < $3)
+      AND o.delivered_at IS NULL AND o.created_at >= $4
+      AND ((o.email_done_at IS NULL AND (o.email_next_attempt_at IS NULL OR o.email_next_attempt_at <= $2))
+        OR (o.push_done_at IS NULL AND (o.push_next_attempt_at IS NULL OR o.push_next_attempt_at <= $2)))
 ), g AS (
     SELECT user_id, pass_id, count(*) AS n, sum(count(*)) OVER (ORDER BY user_id, pass_id) AS running
     FROM p GROUP BY user_id, pass_id
 )
 SELECT p.id, p.user_id, p.pass_id, p.target_kind, p.target_public_key, p.name, p.alert_kind, p.value,
-       p.detail, p.attempts, p.email, p.email_verified, p.target_id
+       p.detail, p.push_attempts, p.email, p.email_verified, p.alert_email, p.alert_push, p.email_due, p.push_due, p.target_id
 FROM p JOIN g ON g.user_id = p.user_id AND g.pass_id = p.pass_id
 WHERE g.running <= $1::bigint OR g.running = g.n
 ORDER BY p.user_id, p.pass_id, p.id
@@ -221,9 +320,9 @@ ORDER BY p.user_id, p.pass_id, p.id
 
 type PendingAlertsParams struct {
 	RowLimit          int64              `json:"row_limit"`
+	Now               pgtype.Timestamptz `json:"now"`
 	PassTimeoutBefore pgtype.Timestamptz `json:"pass_timeout_before"`
 	NotBefore         pgtype.Timestamptz `json:"not_before"`
-	Now               pgtype.Timestamptz `json:"now"`
 }
 
 type PendingAlertsRow struct {
@@ -234,23 +333,28 @@ type PendingAlertsRow struct {
 	TargetPublicKey []byte    `json:"target_public_key"`
 	Name            string    `json:"name"`
 	AlertKind       string    `json:"alert_kind"`
-	Value           int64     `json:"value"`
+	Value           *int64    `json:"value"`
 	Detail          string    `json:"detail"`
-	Attempts        int16     `json:"attempts"`
+	PushAttempts    int16     `json:"push_attempts"`
 	Email           string    `json:"email"`
 	EmailVerified   bool      `json:"email_verified"`
+	AlertEmail      bool      `json:"alert_email"`
+	AlertPush       bool      `json:"alert_push"`
+	EmailDue        bool      `json:"email_due"`
+	PushDue         bool      `json:"push_due"`
 	TargetID        uuid.UUID `json:"target_id"`
 }
 
-// Notices of a finished pass (or one that started before pass_timeout_before and never finished) only, and whole
-// user and pass groups only, so one pass's notices for a user stay in one mail: groups are taken in order
-// while the running total stays within row_limit, and the first group is taken whatever its size.
+// Notices of a finished pass (or one that started before pass_timeout_before and never finished) only, with a channel
+// that is not done and is due, and whole user and pass groups only, so one pass's notices for a user stay in one mail:
+// groups are taken in order while the running total stays within row_limit, and the first group is taken whatever
+// its size. email_due and push_due say which channels to try.
 func (q *Queries) PendingAlerts(ctx context.Context, arg PendingAlertsParams) ([]PendingAlertsRow, error) {
 	rows, err := q.db.Query(ctx, pendingAlerts,
 		arg.RowLimit,
+		arg.Now,
 		arg.PassTimeoutBefore,
 		arg.NotBefore,
-		arg.Now,
 	)
 	if err != nil {
 		return nil, err
@@ -269,9 +373,13 @@ func (q *Queries) PendingAlerts(ctx context.Context, arg PendingAlertsParams) ([
 			&i.AlertKind,
 			&i.Value,
 			&i.Detail,
-			&i.Attempts,
+			&i.PushAttempts,
 			&i.Email,
 			&i.EmailVerified,
+			&i.AlertEmail,
+			&i.AlertPush,
+			&i.EmailDue,
+			&i.PushDue,
 			&i.TargetID,
 		); err != nil {
 			return nil, err

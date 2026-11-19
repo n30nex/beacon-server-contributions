@@ -25,8 +25,8 @@ func TestUserAtlasPostgres(t *testing.T) {
 	ctx, pool, s := userStore(t)
 	u := newUser(t, ctx, s, "atlas")
 
+	// The store leaves Limit unset; the handler fills it from config.
 	a, err := s.UserAtlas(ctx, u.ID)
-	// Storage leaves the operator's configured cap for the HTTP layer to supply.
 	if err != nil || a.Revision != 0 || a.Range != "24h" || len(a.Pins) != 0 || a.Limit != 0 {
 		t.Fatalf("empty: %+v %v", a, err)
 	}

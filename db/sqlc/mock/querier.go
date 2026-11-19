@@ -397,18 +397,32 @@ func (mr *MockQuerierMockRecorder) BeginAlertPass(ctx, passID any) *gomock.Call 
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "BeginAlertPass", reflect.TypeOf((*MockQuerier)(nil).BeginAlertPass), ctx, passID)
 }
 
-// BumpAlertAttempts mocks base method.
-func (m *MockQuerier) BumpAlertAttempts(ctx context.Context, arg db.BumpAlertAttemptsParams) error {
+// BumpAlertEmailAttempts mocks base method.
+func (m *MockQuerier) BumpAlertEmailAttempts(ctx context.Context, arg db.BumpAlertEmailAttemptsParams) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "BumpAlertAttempts", ctx, arg)
+	ret := m.ctrl.Call(m, "BumpAlertEmailAttempts", ctx, arg)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
-// BumpAlertAttempts indicates an expected call of BumpAlertAttempts.
-func (mr *MockQuerierMockRecorder) BumpAlertAttempts(ctx, arg any) *gomock.Call {
+// BumpAlertEmailAttempts indicates an expected call of BumpAlertEmailAttempts.
+func (mr *MockQuerierMockRecorder) BumpAlertEmailAttempts(ctx, arg any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "BumpAlertAttempts", reflect.TypeOf((*MockQuerier)(nil).BumpAlertAttempts), ctx, arg)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "BumpAlertEmailAttempts", reflect.TypeOf((*MockQuerier)(nil).BumpAlertEmailAttempts), ctx, arg)
+}
+
+// BumpAlertPushAttempts mocks base method.
+func (m *MockQuerier) BumpAlertPushAttempts(ctx context.Context, arg db.BumpAlertPushAttemptsParams) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "BumpAlertPushAttempts", ctx, arg)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// BumpAlertPushAttempts indicates an expected call of BumpAlertPushAttempts.
+func (mr *MockQuerierMockRecorder) BumpAlertPushAttempts(ctx, arg any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "BumpAlertPushAttempts", reflect.TypeOf((*MockQuerier)(nil).BumpAlertPushAttempts), ctx, arg)
 }
 
 // BumpUserAtlas mocks base method.
@@ -795,18 +809,18 @@ func (mr *MockQuerierMockRecorder) DeleteDevicesByToken(ctx, pushToken any) *gom
 }
 
 // DeleteExhaustedAlerts mocks base method.
-func (m *MockQuerier) DeleteExhaustedAlerts(ctx context.Context, maxAttempts int16) (int64, error) {
+func (m *MockQuerier) DeleteExhaustedAlerts(ctx context.Context, arg db.DeleteExhaustedAlertsParams) (int64, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "DeleteExhaustedAlerts", ctx, maxAttempts)
+	ret := m.ctrl.Call(m, "DeleteExhaustedAlerts", ctx, arg)
 	ret0, _ := ret[0].(int64)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // DeleteExhaustedAlerts indicates an expected call of DeleteExhaustedAlerts.
-func (mr *MockQuerierMockRecorder) DeleteExhaustedAlerts(ctx, maxAttempts any) *gomock.Call {
+func (mr *MockQuerierMockRecorder) DeleteExhaustedAlerts(ctx, arg any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteExhaustedAlerts", reflect.TypeOf((*MockQuerier)(nil).DeleteExhaustedAlerts), ctx, maxAttempts)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteExhaustedAlerts", reflect.TypeOf((*MockQuerier)(nil).DeleteExhaustedAlerts), ctx, arg)
 }
 
 // DeleteExpiredPollingClaims mocks base method.
@@ -2603,6 +2617,20 @@ func (mr *MockQuerierMockRecorder) HasUntypedObservations(ctx, maxID any) *gomoc
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "HasUntypedObservations", reflect.TypeOf((*MockQuerier)(nil).HasUntypedObservations), ctx, maxID)
 }
 
+// HoldAlertPush mocks base method.
+func (m *MockQuerier) HoldAlertPush(ctx context.Context, arg db.HoldAlertPushParams) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "HoldAlertPush", ctx, arg)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// HoldAlertPush indicates an expected call of HoldAlertPush.
+func (mr *MockQuerierMockRecorder) HoldAlertPush(ctx, arg any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "HoldAlertPush", reflect.TypeOf((*MockQuerier)(nil).HoldAlertPush), ctx, arg)
+}
+
 // InsertAlertNotices mocks base method.
 func (m *MockQuerier) InsertAlertNotices(ctx context.Context, arg db.InsertAlertNoticesParams) error {
 	m.ctrl.T.Helper()
@@ -4347,6 +4375,34 @@ func (mr *MockQuerierMockRecorder) MarkAlertsDelivered(ctx, arg any) *gomock.Cal
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "MarkAlertsDelivered", reflect.TypeOf((*MockQuerier)(nil).MarkAlertsDelivered), ctx, arg)
 }
 
+// MarkAlertsEmailDone mocks base method.
+func (m *MockQuerier) MarkAlertsEmailDone(ctx context.Context, arg db.MarkAlertsEmailDoneParams) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "MarkAlertsEmailDone", ctx, arg)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// MarkAlertsEmailDone indicates an expected call of MarkAlertsEmailDone.
+func (mr *MockQuerierMockRecorder) MarkAlertsEmailDone(ctx, arg any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "MarkAlertsEmailDone", reflect.TypeOf((*MockQuerier)(nil).MarkAlertsEmailDone), ctx, arg)
+}
+
+// MarkAlertsPushDone mocks base method.
+func (m *MockQuerier) MarkAlertsPushDone(ctx context.Context, arg db.MarkAlertsPushDoneParams) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "MarkAlertsPushDone", ctx, arg)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// MarkAlertsPushDone indicates an expected call of MarkAlertsPushDone.
+func (mr *MockQuerierMockRecorder) MarkAlertsPushDone(ctx, arg any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "MarkAlertsPushDone", reflect.TypeOf((*MockQuerier)(nil).MarkAlertsPushDone), ctx, arg)
+}
+
 // MarkPartialRollupHours mocks base method.
 func (m *MockQuerier) MarkPartialRollupHours(ctx context.Context) error {
 	m.ctrl.T.Helper()
@@ -5614,6 +5670,21 @@ func (mr *MockQuerierMockRecorder) SetRollupHourPartial(ctx, hour any) *gomock.C
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetRollupHourPartial", reflect.TypeOf((*MockQuerier)(nil).SetRollupHourPartial), ctx, hour)
 }
 
+// SetUserAlertChannels mocks base method.
+func (m *MockQuerier) SetUserAlertChannels(ctx context.Context, arg db.SetUserAlertChannelsParams) (int64, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "SetUserAlertChannels", ctx, arg)
+	ret0, _ := ret[0].(int64)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// SetUserAlertChannels indicates an expected call of SetUserAlertChannels.
+func (mr *MockQuerierMockRecorder) SetUserAlertChannels(ctx, arg any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetUserAlertChannels", reflect.TypeOf((*MockQuerier)(nil).SetUserAlertChannels), ctx, arg)
+}
+
 // SetUserDisabled mocks base method.
 func (m *MockQuerier) SetUserDisabled(ctx context.Context, arg db.SetUserDisabledParams) (int64, error) {
 	m.ctrl.T.Helper()
@@ -5908,6 +5979,20 @@ func (m *MockQuerier) TryRollupLock(ctx context.Context) (bool, error) {
 func (mr *MockQuerierMockRecorder) TryRollupLock(ctx any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "TryRollupLock", reflect.TypeOf((*MockQuerier)(nil).TryRollupLock), ctx)
+}
+
+// TurnOnAlertPush mocks base method.
+func (m *MockQuerier) TurnOnAlertPush(ctx context.Context, id uuid.UUID) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "TurnOnAlertPush", ctx, id)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// TurnOnAlertPush indicates an expected call of TurnOnAlertPush.
+func (mr *MockQuerierMockRecorder) TurnOnAlertPush(ctx, id any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "TurnOnAlertPush", reflect.TypeOf((*MockQuerier)(nil).TurnOnAlertPush), ctx, id)
 }
 
 // UpdateObserverRegionScope mocks base method.
@@ -6312,6 +6397,21 @@ func (m *MockQuerier) UpsertUserDevice(ctx context.Context, arg db.UpsertUserDev
 func (mr *MockQuerierMockRecorder) UpsertUserDevice(ctx, arg any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpsertUserDevice", reflect.TypeOf((*MockQuerier)(nil).UpsertUserDevice), ctx, arg)
+}
+
+// UserAlertChannels mocks base method.
+func (m *MockQuerier) UserAlertChannels(ctx context.Context, id uuid.UUID) (db.UserAlertChannelsRow, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "UserAlertChannels", ctx, id)
+	ret0, _ := ret[0].(db.UserAlertChannelsRow)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// UserAlertChannels indicates an expected call of UserAlertChannels.
+func (mr *MockQuerierMockRecorder) UserAlertChannels(ctx, id any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UserAlertChannels", reflect.TypeOf((*MockQuerier)(nil).UserAlertChannels), ctx, id)
 }
 
 // UserAlertRuleKinds mocks base method.

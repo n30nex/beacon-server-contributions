@@ -64,8 +64,11 @@ type Querier interface {
 	// untyped rows it picked, how many it typed, and the last picked id (0 when it picked none).
 	BackfillObservationPayloadTypes(ctx context.Context, arg BackfillObservationPayloadTypesParams) (BackfillObservationPayloadTypesRow, error)
 	BeginAlertPass(ctx context.Context, passID uuid.UUID) error
-	// Counts a failed attempt and holds the notice back for a minute, doubling with each earlier failure.
-	BumpAlertAttempts(ctx context.Context, arg BumpAlertAttemptsParams) error
+	// Counts a failed mail and holds it back for a minute, doubling with each earlier failure; the last allowed failure
+	// ends the channel.
+	BumpAlertEmailAttempts(ctx context.Context, arg BumpAlertEmailAttemptsParams) error
+	// As for mail, or held until hold_until when the push server asked for longer.
+	BumpAlertPushAttempts(ctx context.Context, arg BumpAlertPushAttemptsParams) error
 	BumpUserAtlas(ctx context.Context, arg BumpUserAtlasParams) (int64, error)
 	// Exact check of messages in (after_id, through_id]: pairs the definition has and the table lacks (counting
 	// observations up to obs_through only), and table pairs no stored observation backs.
@@ -111,7 +114,8 @@ type Querier interface {
 	DeleteChannelConfigScopes(ctx context.Context) error
 	DeleteChannelMembersNotIn(ctx context.Context, arg DeleteChannelMembersNotInParams) error
 	DeleteDevicesByToken(ctx context.Context, pushToken string) error
-	DeleteExhaustedAlerts(ctx context.Context, maxAttempts int16) (int64, error)
+	// A finished notice that ran out of attempts on a channel is dropped.
+	DeleteExhaustedAlerts(ctx context.Context, arg DeleteExhaustedAlertsParams) (int64, error)
 	DeleteExpiredPollingClaims(ctx context.Context, receivedAt pgtype.Timestamptz) error
 	DeleteExpiredPortalStates(ctx context.Context, cutoff pgtype.Timestamptz) error
 	DeleteExpiredRepeaterReadings(ctx context.Context, receivedAt pgtype.Timestamptz) error
@@ -361,6 +365,8 @@ type Querier interface {
 	// Whether any observation up to @max_id lacks a payload type. A full scan, run at most once per
 	// process by the payload-type backfill.
 	HasUntypedObservations(ctx context.Context, maxID int64) (bool, error)
+	// A rate-limited push waits until hold_until; no attempt is counted.
+	HoldAlertPush(ctx context.Context, arg HoldAlertPushParams) error
 	InsertAlertNotices(ctx context.Context, arg InsertAlertNoticesParams) error
 	// ============================================================
 	// CHANNEL MESSAGES
@@ -672,7 +678,11 @@ type Querier interface {
 	// Serializes one user's request creation (the limit) without blocking the foreign-key checks on their rows.
 	LockUserForRequests(ctx context.Context, id uuid.UUID) (uuid.UUID, error)
 	MarkAlertDeviceDelivered(ctx context.Context, arg MarkAlertDeviceDeliveredParams) error
+	// A notice is delivered once both channels are done.
 	MarkAlertsDelivered(ctx context.Context, arg MarkAlertsDeliveredParams) error
+	// The mail went out (sent_at set) or none was needed.
+	MarkAlertsEmailDone(ctx context.Context, arg MarkAlertsEmailDoneParams) error
+	MarkAlertsPushDone(ctx context.Context, arg MarkAlertsPushDoneParams) error
 	// Hours whose raw rows cleanup already started deleting can never be rolled completely.
 	// Readers report the new status, so the revision moves too.
 	MarkPartialRollupHours(ctx context.Context) error
@@ -706,9 +716,10 @@ type Querier interface {
 	PacketSitesTotalBytes(ctx context.Context) (int64, error)
 	// Who a live token belongs to, without using it.
 	PeekUserToken(ctx context.Context, arg PeekUserTokenParams) (uuid.UUID, error)
-	// Notices of a finished pass (or one that started before pass_timeout_before and never finished) only, and whole
-	// user and pass groups only, so one pass's notices for a user stay in one mail: groups are taken in order
-	// while the running total stays within row_limit, and the first group is taken whatever its size.
+	// Notices of a finished pass (or one that started before pass_timeout_before and never finished) only, with a channel
+	// that is not done and is due, and whole user and pass groups only, so one pass's notices for a user stay in one mail:
+	// groups are taken in order while the running total stays within row_limit, and the first group is taken whatever
+	// its size. email_due and push_due say which channels to try.
 	PendingAlerts(ctx context.Context, arg PendingAlertsParams) ([]PendingAlertsRow, error)
 	PollingAdminRequestCounts(ctx context.Context, targets [][]byte) ([]PollingAdminRequestCountsRow, error)
 	// Each live candidate and each assigned observer of the given targets. rank is -1 for an unassigned candidate.
@@ -848,6 +859,7 @@ type Querier interface {
 	SetPollingObserver(ctx context.Context, arg SetPollingObserverParams) error
 	SetPollingState(ctx context.Context, arg SetPollingStateParams) error
 	SetRollupHourPartial(ctx context.Context, hour pgtype.Timestamptz) error
+	SetUserAlertChannels(ctx context.Context, arg SetUserAlertChannelsParams) (int64, error)
 	SetUserDisabled(ctx context.Context, arg SetUserDisabledParams) (int64, error)
 	SetUserEmailVerified(ctx context.Context, arg SetUserEmailVerifiedParams) (int64, error)
 	SetUserPassword(ctx context.Context, arg SetUserPasswordParams) (int64, error)
@@ -886,6 +898,7 @@ type Querier interface {
 	// An hour [H, H+1h) is eligible once now() >= H + 95 min (ingest clamps heard_at to ±30 min).
 	// ============================================================
 	TryRollupLock(ctx context.Context) (bool, error)
+	TurnOnAlertPush(ctx context.Context, id uuid.UUID) error
 	// Records the observer's own OTA-reported region scope, from the "self"
 	// field of a /neighbors report. Always known (not queried OTA), so this
 	// unconditionally overwrites, unlike the neighbor-side region_scope.
@@ -975,9 +988,10 @@ type Querier interface {
 	// TRANSPORT CODES
 	// ============================================================
 	UpsertTransportScope(ctx context.Context, arg UpsertTransportScopeParams) error
-	// The token is unique, so a registration for a token another session holds moves that row (crossing users on
+	// The handle is unique, so a registration for a handle another session holds moves that row (crossing users on
 	// purpose: a phone belongs to one account, so the previous user's alerts never reach its next user).
 	UpsertUserDevice(ctx context.Context, arg UpsertUserDeviceParams) error
+	UserAlertChannels(ctx context.Context, id uuid.UUID) (UserAlertChannelsRow, error)
 	// Only enabled rules: back_online needs a gone_quiet rule that is on.
 	UserAlertRuleKinds(ctx context.Context, arg UserAlertRuleKindsParams) ([]string, error)
 	UserByEmail(ctx context.Context, email string) (User, error)

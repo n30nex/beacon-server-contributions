@@ -11,8 +11,8 @@ import (
 // Client floors this server code needs. Bump the matching one when a release breaks older
 // clients; config can raise them, never lower them. Empty means no requirement.
 const (
-	MinAppVersion = "2.1.0" // BEACON Mobile: exact page cursors and waiting out busy-server 503s
-	MinWebVersion = "2.1.0" // Beacon Web: exact page cursors and waiting out read-model 503s
+	MinAppVersion = "2.3.0" // BEACON Mobile: alert push through the push server
+	MinWebVersion = "2.3.0" // Beacon Web: alert channel switches
 	// BEACON Mobile: the first release that sends a /ws ticket, required while websocket.require_origin is on
 	TicketAppVersion = "2.1.1"
 )
@@ -63,9 +63,13 @@ type InfoFeatures struct {
 	// Registration is true when new sign-ups are open; only meaningful when accounts is "local".
 	Registration      bool `json:"registration" example:"false"`
 	TelemetryRequests bool `json:"telemetryRequests" example:"false"`
-	Alerts            bool `json:"alerts" example:"false"`
-	// AlertDelivery is "push" or "email" while alerts is true.
-	AlertDelivery string `json:"alertDelivery,omitempty" enums:"push,email"`
+	// Alerts is true when the server sends alerts by at least one channel.
+	Alerts bool `json:"alerts" example:"false"`
+	// AlertChannels says which channels the server sends alerts by.
+	AlertChannels InfoAlertChannels `json:"alertChannels"`
+	// Push names the push server the app gets a device handle from, and this server's Push ID there; set only while
+	// alertChannels.push is true.
+	Push *InfoPush `json:"push,omitempty"`
 	// PortalURL is the sign-in portal's base URL; set only when accounts is "portal".
 	PortalURL string `json:"portalUrl,omitempty" example:"https://portal.example.org"`
 	// AtlasTelemetry is true when the server accepts the telemetry view and telemetryTiles on Atlas pins and the 72h
@@ -73,6 +77,26 @@ type InfoFeatures struct {
 	AtlasTelemetry bool `json:"atlasTelemetry" example:"true"`
 	// MapTelemetry is true when the server returns recent telemetry readings for map labels. Always true on this version.
 	MapTelemetry bool `json:"mapTelemetry" example:"true"`
+	// AppDeviceLabel is true when POST /auth/app/token takes a deviceLabel. Always true on this version.
+	AppDeviceLabel bool `json:"appDeviceLabel" example:"true"`
+}
+
+// InfoAlertChannels is the alert channels a server offers.
+type InfoAlertChannels struct {
+	Email bool `json:"email" example:"false"`
+	Push  bool `json:"push" example:"false"`
+}
+
+// InfoPush is where the app registers for this server's push notifications.
+type InfoPush struct {
+	Server string `json:"server" example:"https://push.meshcorebeacon.ca"`
+	PushID string `json:"pushId" example:"inst_7f3k2m9qxa"`
+}
+
+// PushDomainCheck answers the push server's GET /.well-known/beacon-push.
+type PushDomainCheck struct {
+	PushID string `json:"pushId"`
+	MAC    string `json:"mac"`
 }
 
 // WSTicket lets a client that sends no Origin open /ws, in the X-Beacon-Ticket header.

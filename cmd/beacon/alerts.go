@@ -4,36 +4,64 @@
 package main
 
 import (
-	"errors"
 	"log/slog"
 	"net/url"
 
 	"github.com/MeshCore-Beacon/beacon-server/db"
 	"github.com/MeshCore-Beacon/beacon-server/internal/alerts"
+	"github.com/MeshCore-Beacon/beacon-server/internal/config"
 	"github.com/MeshCore-Beacon/beacon-server/internal/mail"
 )
 
-// newAlertSender builds the outbox sender for the delivery mode, or nil when nothing can be sent: delivery off
-// or email with no mailer. Push without credentials is an error, so a server never advertises
-// alerts it cannot send. The credentials path is never logged.
-func newAlertSender(delivery string, mailSender mail.Sender, store *db.Store, publicURL *url.URL, credentialsPath string) (*alerts.Sender, error) {
-	switch delivery {
-	case "email":
-		if mailSender == nil {
-			return nil, nil
-		}
-		slog.Info("alert delivery", "component", "startup", "mode", "email")
-		return alerts.NewSender(db.AlertEval{Store: store}, "email", mailSender, nil, publicURL, nil), nil
-	case "push":
-		if credentialsPath == "" {
-			return nil, errors.New("alerts.delivery is push but BEACON_PUSH_CREDENTIALS is not set: set it to the Google service-account key file, or set alerts.delivery to off")
-		}
-		fcm, err := alerts.LoadFCM(credentialsPath)
-		if err != nil {
-			return nil, err
-		}
-		slog.Info("alert delivery", "component", "startup", "mode", "push")
-		return alerts.NewSender(db.AlertEval{Store: store}, "push", nil, fcm, publicURL, nil), nil
+// pushNotice is logged once at startup while push is on, so operators know what the push server sees.
+func pushNotice(server string) string {
+	host := server
+	if u, err := url.Parse(server); err == nil && u.Host != "" {
+		host = u.Host
 	}
-	return nil, nil
+	return "Alert push notifications are delivered through the MeshCore Beacon push server (" + host + "). " +
+		"The push server identifies this server as the sender of every notification, enforces rate limits, and records usage " +
+		"(server, time, recipient handle, size) to detect and act on abuse. Servers that abuse it may be rate-limited, " +
+		"suspended, or banned. Notification contents are encrypted for each device and never readable by the push server."
+}
+
+// warnRetiredPushCredentials flags BEACON_PUSH_CREDENTIALS, the Firebase key push used before the push server.
+func warnRetiredPushCredentials(lookup func(string) (string, bool)) {
+	if _, ok := lookup("BEACON_PUSH_CREDENTIALS"); ok {
+		slog.Warn("BEACON_PUSH_CREDENTIALS is unused since 2.3.0 (push goes through the push server) and can be removed", "component", "startup")
+	}
+}
+
+// alertChannels is what alerts go out by on this server: email needs the account mailer, and neither works
+// without accounts.
+func alertChannels(ra config.ResolvedAlerts, accountsOn bool, mailSender mail.Sender) (email, push bool) {
+	if !accountsOn {
+		return false, false
+	}
+	return ra.Email && mailSender != nil, ra.Push
+}
+
+// newAlertSender builds the outbox sender for the channels on, and the push server client when push is on; nil
+// when no channel is on. Neither the Push secret nor anything derived from it is logged.
+func newAlertSender(ra config.ResolvedAlerts, accountsOn bool, mailSender mail.Sender, store *db.Store, publicURL *url.URL) (*alerts.Sender, *alerts.Relay) {
+	email, push := alertChannels(ra, accountsOn, mailSender)
+	if !email && !push {
+		return nil, nil
+	}
+	cfg := alerts.SenderConfig{PublicURL: publicURL}
+	if email {
+		cfg.Mail = mailSender
+	}
+	var relay *alerts.Relay
+	if push {
+		slog.Warn(pushNotice(ra.PushServer), "component", "startup")
+		if !ra.OfficialServer {
+			slog.Warn("WARNING: alerts.push.server is not the official MeshCore Beacon push server: the official Beacon app will not receive these notifications",
+				"component", "startup", "server", ra.PushServer)
+		}
+		relay = alerts.NewRelay(ra.PushServer, ra.PushID, ra.PushSecret, nil)
+		cfg.Push, cfg.PushID = relay, ra.PushID
+	}
+	slog.Info("alert channels", "component", "startup", "email", email, "push", push)
+	return alerts.NewSender(db.AlertEval{Store: store}, cfg), relay
 }
