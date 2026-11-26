@@ -1,7 +1,7 @@
 name: Qualify exact Canadaverse sources
 on:
   push:
-    branches: [codex/canadaverse-builds-20261123]
+    branches: [codex/canadaverse-builds-20261126]
   workflow_dispatch:
 permissions:
   contents: read
@@ -13,14 +13,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: MeshCore-Beacon/beacon-server
-          ref: 4fdb3f75ddbf1aeba22c3f929181a72727612867
+          ref: 5fb32926f71998e9080190b84dc75eca2dd09f6d
           persist-credentials: false
       - name: Build the upstream Dockerfile for the Pi
         shell: bash
         run: |
           set -euo pipefail
           rev=$(git rev-parse HEAD)
-          test "$rev" = 4fdb3f75ddbf1aeba22c3f929181a72727612867
+          test "$rev" = 5fb32926f71998e9080190b84dc75eca2dd09f6d
           test -z "$(git status --porcelain)"
           out="$RUNNER_TEMP/exact-server"; mkdir "$out"
           tag="beacon-exact-preview:$rev"
@@ -53,7 +53,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: MeshCore-Beacon/beacon-web
-          ref: e917f975733bf5de2f3c5cf4065f95dec1b92cee
+          ref: 2fcac7cc27069d9c390167d96082a5d52cdd87de
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
@@ -68,7 +68,7 @@ jobs:
           VITE_WS_URL: wss://canadaverse.org/beacon-dev/ws
         run: |
           set -eu
-          test "$(git rev-parse HEAD)" = e917f975733bf5de2f3c5cf4065f95dec1b92cee
+          test "$(git rev-parse HEAD)" = 2fcac7cc27069d9c390167d96082a5d52cdd87de
           test -z "$(git status --porcelain)"
           npm run build -- --base=/beacon-dev/
           node .build/compress-assets.mjs dist/assets
@@ -97,7 +97,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: MeshCore-Beacon/beacon-flutter-app
-          ref: e4427105999b4b9ffbbc3816e9f187faf7d8e829
+          ref: b506a9d53115a224987a7e9a9d4dcb93084bfac3
           persist-credentials: false
       - uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78
         with:
@@ -116,7 +116,7 @@ jobs:
       - name: Record the mobile source and APK
         run: |
           set -eu
-          test "$(git rev-parse HEAD)" = e4427105999b4b9ffbbc3816e9f187faf7d8e829
+          test "$(git rev-parse HEAD)" = b506a9d53115a224987a7e9a9d4dcb93084bfac3
           test -z "$(git status --porcelain --untracked-files=no)"
           out="$RUNNER_TEMP/exact-android"; mkdir "$out"
           cp build/app/outputs/flutter-apk/app-debug.apk "$out/"
